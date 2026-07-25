@@ -1,0 +1,3 @@
+# Tells Git to ignore heavy /data files
+data/
+!data/.keep
