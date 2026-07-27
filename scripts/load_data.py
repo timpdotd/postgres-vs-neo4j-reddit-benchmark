@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 """
-load_data.py — ETL pipeline for the Reddit Hyperlink Network benchmark.
+load_data.py — High-performance ETL pipeline for PostgreSQL and Neo4j.
 
-Reads both SNAP TSV files from ../data/, deduplicates subreddit names,
-and bulk-loads data into PostgreSQL (via COPY) and Neo4j (via two-phase
-UNWIND batching: nodes first, then relationships).
+Enforces 3NF Normalization (Relational) and Multi-Node/Multi-Relationship
+Property Graph Modeling (NoSQL) as required by FAQ Q12.
 
-Usage:
-    python scripts/load_data.py [--pg-only] [--neo4j-only] [--limit N]
-
-Environment overrides (all have sensible defaults):
-    PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASS
-    NEO4J_URI, NEO4J_USER, NEO4J_PASS
+Pipeline architecture:
+  1. In-memory deduplication & entity resolution across both SNAP TSV files.
+     Splits data into unique Subreddits, Posts, and Hyperlinks.
+  2. PostgreSQL loading:
+     - Uses high-speed bulk `COPY FROM STDIN` via StringIO buffers.
+     - Runs `VACUUM ANALYZE` post-load to ensure accurate query planner statistics.
+  3. Neo4j loading:
+     - Enforces constraints and property indexes first.
+     - Phase 1: Bulk UNWIND creation of all (:Subreddit) nodes.
+     - Phase 2: Bulk UNWIND MERGE of (:Post) nodes and (:Subreddit)-[:POSTED]->(:Post)-[:REFERENCES]->(:Subreddit) edges.
 """
 
-import argparse
-import csv
 import io
+import json
 import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator
+from typing import Any
 
 import psycopg2
-import psycopg2.extras
 from neo4j import GraphDatabase
 
 # ---------------------------------------------------------------------------
@@ -34,31 +34,24 @@ from neo4j import GraphDatabase
 # ---------------------------------------------------------------------------
 
 DATA_DIR = Path(__file__).parent.parent / "data"
-SQL_DIR  = Path(__file__).parent.parent / "sql"
-
-TSV_FILES = {
-    "body":  DATA_DIR / "soc-redditHyperlinks-body.tsv",
-    "title": DATA_DIR / "soc-redditHyperlinks-title.tsv",
-}
+TSV_FILES = [
+    ("body",  DATA_DIR / "soc-redditHyperlinks-body.tsv"),
+    ("title", DATA_DIR / "soc-redditHyperlinks-title.tsv"),
+]
 
 PG_CONFIG = {
     "host":     os.getenv("PG_HOST",  "localhost"),
     "port":     int(os.getenv("PG_PORT",  "5432")),
-    "dbname":   os.getenv("PG_DB",   "reddit_benchmark"),
-    "user":     os.getenv("PG_USER", "reddit_user"),
-    "password": os.getenv("PG_PASS", "reddit_password"),
+    "dbname":   os.getenv("PG_DB",    "reddit_benchmark"),
+    "user":     os.getenv("PG_USER",  "reddit_user"),
+    "password": os.getenv("PG_PASS",  "reddit_password"),
 }
 
 NEO4J_URI  = os.getenv("NEO4J_URI",  "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASS = os.getenv("NEO4J_PASS", "reddit_password")
 
-# Neo4j batch sizes — nodes are small (name only), rels carry the full payload
-NEO4J_NODE_BATCH = 5_000
-NEO4J_REL_BATCH  = 1_000
-
-# PostgreSQL bulk-copy chunk size
-PG_COPY_CHUNK = 50_000
+BATCH_SIZE_NEO = 2500
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,324 +62,244 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# TSV parsing
+# Phase 1: In-memory parsing and Entity Resolution (3NF / Property Graph)
 # ---------------------------------------------------------------------------
 
-# Official SNAP column header names:
-# SOURCE_SUBREDDIT  TARGET_SUBREDDIT  POST_ID  TIMESTAMP  POST_LABEL  POST_PROPERTIES
-_REQUIRED_COLS = {"SOURCE_SUBREDDIT", "TARGET_SUBREDDIT", "POST_ID", "TIMESTAMP", "POST_LABEL"}
-
-
-def _parse_post_properties(raw: str) -> list[float] | None:
-    """Parse the 86-value comma-separated POST_PROPERTIES field."""
-    raw = raw.strip()
-    if not raw:
-        return None
-    try:
-        vals = [float(v) for v in raw.split(",")]
-        return vals if len(vals) == 86 else None   # reject malformed vectors
-    except ValueError:
-        return None
-
-
-def iter_rows(source_type: str, limit: int | None = None) -> Generator[dict, None, None]:
+def parse_dataset() -> tuple[dict[str, int], list[tuple], set[tuple]]:
     """
-    Yield parsed row dicts from one SNAP TSV file.
-    source_type: 'body' or 'title'
+    Parses both TSVs and resolves entities into normalized collections:
+      - subreddits: dict[name, int_id]
+      - posts: list of (post_int_id, post_id, source_sub_int_id, timestamp, source_type, post_label, props_pg_array, props_list)
+      - hyperlinks: set of (post_int_id, target_sub_int_id)
     """
-    path = TSV_FILES[source_type]
-    if not path.exists():
-        log.error("Missing data file: %s", path)
-        sys.exit(1)
+    log.info("Starting entity resolution across TSV files...")
+    t0 = time.perf_counter()
 
-    log.info("Parsing %s (%.0f MB)...", path.name, path.stat().st_size / 1e6)
+    subreddits: dict[str, int] = {}
+    posts_map: dict[str, tuple] = {}
+    hyperlinks: set[tuple[int, int]] = set()
 
-    count = skipped = 0
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            if not _REQUIRED_COLS.issubset(row.keys()):
-                skipped += 1
-                continue
+    def get_sub_id(name: str) -> int:
+        if name not in subreddits:
+            subreddits[name] = len(subreddits) + 1
+        return subreddits[name]
 
-            src  = row["SOURCE_SUBREDDIT"].strip().lower()
-            tgt  = row["TARGET_SUBREDDIT"].strip().lower()
-            pid  = row["POST_ID"].strip()
-            ts   = row["TIMESTAMP"].strip()
-            lbl  = row["POST_LABEL"].strip()
-            prop = row.get("POST_PROPERTIES", "").strip()
-
-            if not (src and tgt and pid and ts and lbl):
-                skipped += 1
-                continue
-
-            try:
-                post_label = int(lbl)
-                timestamp  = datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                skipped += 1
-                continue
-
-            if post_label not in (-1, 1):
-                skipped += 1
-                continue
-
-            yield {
-                "source":          src,
-                "target":          tgt,
-                "post_id":         pid,
-                "timestamp":       timestamp,
-                "source_type":     source_type,
-                "post_label":      post_label,
-                "post_properties": _parse_post_properties(prop),
-            }
-
-            count += 1
-            if limit and count >= limit:
-                break
-
-    log.info("  → %d rows parsed, %d skipped from %s", count, skipped, path.name)
-
-
-# ---------------------------------------------------------------------------
-# PostgreSQL loader
-# ---------------------------------------------------------------------------
-
-def _pg_apply_schema(conn) -> None:
-    schema_sql = (SQL_DIR / "schema.sql").read_text(encoding="utf-8")
-    with conn.cursor() as cur:
-        cur.execute(schema_sql)
-    conn.commit()
-    log.info("PostgreSQL schema applied.")
-
-
-def _pg_upsert_subreddits(conn, names: set[str]) -> dict[str, int]:
-    """Insert all unique subreddit names, return name→id map."""
-    log.info("Upserting %d subreddit names into PostgreSQL...", len(names))
-    with conn.cursor() as cur:
-        psycopg2.extras.execute_values(
-            cur,
-            "INSERT INTO subreddits (name) VALUES %s ON CONFLICT (name) DO NOTHING",
-            [(n,) for n in sorted(names)],
-            page_size=5_000,
-        )
-        conn.commit()
-        cur.execute("SELECT name, id FROM subreddits")
-        return {row[0]: row[1] for row in cur.fetchall()}
-
-
-def _pg_copy_hyperlinks(conn, rows: list[dict], sub_ids: dict[str, int]) -> int:
-    """Bulk-insert hyperlinks using PostgreSQL COPY protocol (fastest method)."""
-    buf = io.StringIO()
-    inserted = 0
-    for row in rows:
-        src_id = sub_ids.get(row["source"])
-        tgt_id = sub_ids.get(row["target"])
-        if src_id is None or tgt_id is None:
+    total_rows = 0
+    for src_type, file_path in TSV_FILES:
+        if not file_path.exists():
+            log.warning("File not found: %s (skipping)", file_path)
             continue
 
-        props_str = (
-            "{" + ",".join(str(v) for v in row["post_properties"]) + "}"
-            if row["post_properties"]
-            else "\\N"
-        )
-        buf.write(
-            f"{src_id}\t{tgt_id}\t{row['post_id']}\t"
-            f"{row['timestamp'].isoformat()}\t"
-            f"{row['source_type']}\t{row['post_label']}\t{props_str}\n"
-        )
-        inserted += 1
+        log.info("Reading %s...", file_path.name)
+        with open(file_path, "r", encoding="utf-8") as f:
+            header = f.readline()  # skip header
+            for line in f:
+                total_rows += 1
+                parts = line.rstrip("\r\n").split("\t")
+                if len(parts) < 6:
+                    continue
 
-    buf.seek(0)
-    with conn.cursor() as cur:
-        cur.copy_expert(
-            "COPY hyperlinks "
-            "(source_subreddit_id, target_subreddit_id, post_id, timestamp, "
-            " source_type, post_label, post_properties) "
-            "FROM STDIN WITH (FORMAT TEXT, NULL '\\N')",
-            buf,
-        )
-    conn.commit()
-    return inserted
+                src_name, tgt_name, post_id, ts_str, label_str, props_str = parts[:6]
+
+                src_id = get_sub_id(src_name)
+                tgt_id = get_sub_id(tgt_name)
+
+                # Entity resolve Post (deduplicate by global post_id)
+                if post_id not in posts_map:
+                    post_int_id = len(posts_map) + 1
+                    label = int(label_str)
+                    
+                    # Parse vector
+                    try:
+                        props_list = [float(x) for x in props_str.split(",") if x]
+                    except ValueError:
+                        props_list = []
+                    
+                    # PostgreSQL array literal string e.g. "{0.1, 0.2}"
+                    props_pg = "{" + ",".join(str(x) for x in props_list) + "}" if props_list else "{}"
+
+                    posts_map[post_id] = (
+                        post_int_id,
+                        post_id,
+                        src_id,
+                        ts_str,
+                        src_type,
+                        label,
+                        props_pg,
+                        props_list,
+                        src_name,
+                    )
+                else:
+                    post_int_id = posts_map[post_id][0]
+
+                # Link edge
+                hyperlinks.add((post_int_id, tgt_id))
+
+    el = time.perf_counter() - t0
+    log.info("Entity resolution complete in %.2f s (processed %d rows):", el, total_rows)
+    log.info("  -> Subreddit entities : %d", len(subreddits))
+    log.info("  -> Post entities      : %d", len(posts_map))
+    log.info("  -> Hyperlink edges    : %d", len(hyperlinks))
+
+    return subreddits, list(posts_map.values()), hyperlinks
 
 
-def _pg_vacuum_analyze(conn) -> None:
-    """
-    Run VACUUM ANALYZE so the query planner has accurate statistics.
-    Must run outside a transaction block (autocommit=True).
-    Without this, EXPLAIN plans after a fresh load can be wildly wrong.
-    """
-    log.info("Running VACUUM ANALYZE (updating planner statistics)...")
-    old_isolation = conn.isolation_level
-    conn.set_isolation_level(0)  # AUTOCOMMIT
-    with conn.cursor() as cur:
-        cur.execute("VACUUM ANALYZE subreddits")
-        cur.execute("VACUUM ANALYZE hyperlinks")
-    conn.set_isolation_level(old_isolation)
-    log.info("VACUUM ANALYZE complete.")
+# ---------------------------------------------------------------------------
+# Phase 2: PostgreSQL High-Speed Bulk Loading
+# ---------------------------------------------------------------------------
 
-
-def load_postgres(all_rows: list[dict]) -> None:
-    log.info("=== PostgreSQL Load ===")
-    t0 = time.perf_counter()
-
+def load_postgresql(subreddits: dict[str, int], posts: list[tuple], hyperlinks: set[tuple]) -> None:
+    log.info("=== PostgreSQL: Connecting and applying DDL ===")
     conn = psycopg2.connect(**PG_CONFIG)
-    _pg_apply_schema(conn)
+    conn.autocommit = False
 
-    # Collect all unique subreddit names
-    names: set[str] = {row["source"] for row in all_rows} | {row["target"] for row in all_rows}
-    sub_ids = _pg_upsert_subreddits(conn, names)
+    schema_sql = Path(__file__).parent.parent / "sql" / "schema.sql"
+    with conn.cursor() as cur:
+        with open(schema_sql, "r", encoding="utf-8") as f:
+            cur.execute(f.read())
+    conn.commit()
+    log.info("PostgreSQL schema reset.")
 
-    # Bulk-insert hyperlinks in chunks via COPY
-    total_inserted = 0
-    for i in range(0, len(all_rows), PG_COPY_CHUNK):
-        chunk = all_rows[i : i + PG_COPY_CHUNK]
-        total_inserted += _pg_copy_hyperlinks(conn, chunk, sub_ids)
-        log.info("  PG: %d / %d hyperlinks inserted...", total_inserted, len(all_rows))
+    t0 = time.perf_counter()
+    with conn.cursor() as cur:
+        # 1. COPY subreddits
+        log.info("COPYing %d subreddits into PostgreSQL...", len(subreddits))
+        buf_subs = io.StringIO()
+        for name, sub_id in subreddits.items():
+            # escape backslashes and tabs if any
+            clean_name = name.replace("\\", "\\\\").replace("\t", " ")
+            buf_subs.write(f"{sub_id}\t{clean_name}\n")
+        buf_subs.seek(0)
+        cur.copy_from(buf_subs, "subreddits", columns=("id", "name"))
 
-    # Critical: update planner statistics before benchmarking
-    _pg_vacuum_analyze(conn)
+        # 2. COPY posts
+        log.info("COPYing %d posts into PostgreSQL...", len(posts))
+        buf_posts = io.StringIO()
+        for p in posts:
+            # p: (post_int_id, post_id, src_id, ts, type, label, props_pg, props_list, src_name)
+            pid_clean = p[1].replace("\\", "\\\\").replace("\t", " ")
+            buf_posts.write(f"{p[0]}\t{pid_clean}\t{p[2]}\t{p[3]}\t{p[4]}\t{p[5]}\t{p[6]}\n")
+        buf_posts.seek(0)
+        cur.copy_from(buf_posts, "posts", columns=("id", "post_id", "source_subreddit_id", "timestamp", "source_type", "post_label", "post_properties"))
 
+        # 3. COPY hyperlinks
+        log.info("COPYing %d hyperlinks into PostgreSQL...", len(hyperlinks))
+        buf_links = io.StringIO()
+        for post_int_id, tgt_id in hyperlinks:
+            buf_links.write(f"{post_int_id}\t{tgt_id}\n")
+        buf_links.seek(0)
+        cur.copy_from(buf_links, "hyperlinks", columns=("post_id", "target_subreddit_id"))
+
+    conn.commit()
+    el = time.perf_counter() - t0
+    log.info("PostgreSQL bulk data load finished in %.2f s.", el)
+
+    # VACUUM ANALYZE for query planner statistics
+    log.info("Running VACUUM ANALYZE to compute table statistics...")
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("VACUUM ANALYZE subreddits, posts, hyperlinks;")
     conn.close()
-    log.info(
-        "PostgreSQL load complete: %d subreddits, %d hyperlinks in %.1fs",
-        len(sub_ids), total_inserted, time.perf_counter() - t0,
-    )
+    log.info("PostgreSQL database ready and optimized.")
 
 
 # ---------------------------------------------------------------------------
-# Neo4j loader — two-phase approach
-# ---------------------------------------------------------------------------
-# Phase 1: Create all Subreddit nodes (MERGE on name, batched)
-#          → Each name hits the uniqueness index exactly once.
-# Phase 2: MATCH both endpoint nodes (they exist), CREATE relationship
-#          → No redundant MERGE lookups per relationship.
-#
-# This is ~3–5× faster than the naive single-pass MERGE+CREATE approach
-# because MERGE inside a relationship batch repeatedly re-checks uniqueness.
+# Phase 3: Neo4j High-Speed UNWIND Bulk Loading
 # ---------------------------------------------------------------------------
 
-def _neo4j_apply_schema(driver) -> None:
-    schema = (Path(__file__).parent.parent / "cypher" / "schema.cypher").read_text("utf-8")
-    statements = [
-        s.strip() for s in schema.split(";")
-        if s.strip() and not s.strip().startswith("//")
-    ]
+def load_neo4j(subreddits: dict[str, int], posts: list[tuple], hyperlinks: set[tuple]) -> None:
+    log.info("=== Neo4j: Connecting and applying constraints ===")
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+
+    # Reset graph
     with driver.session() as session:
-        for stmt in statements:
-            try:
-                session.run(stmt)
-            except Exception as exc:
-                log.warning("Schema stmt (may be harmless): %s", exc)
-    log.info("Neo4j schema applied (%d statements).", len(statements))
+        log.info("Clearing existing Neo4j graph...")
+        session.run("MATCH (n) DETACH DELETE n")
+        
+        # Apply schema constraints and indexes
+        schema_cypher = Path(__file__).parent.parent / "cypher" / "schema.cypher"
+        with open(schema_cypher, "r", encoding="utf-8") as f:
+            statements = [s.strip() for s in f.read().split(";") if s.strip()]
+            for stmt in statements:
+                if not stmt.startswith("//"):
+                    session.run(stmt)
+    log.info("Neo4j schema and constraints applied.")
 
-
-def _neo4j_phase1_nodes(driver, names: set[str]) -> None:
-    """Phase 1: MERGE all unique Subreddit nodes in batches."""
-    log.info("Neo4j phase 1 — upserting %d Subreddit nodes...", len(names))
-    name_list = sorted(names)
-    for i in range(0, len(name_list), NEO4J_NODE_BATCH):
-        batch = name_list[i : i + NEO4J_NODE_BATCH]
-        with driver.session() as session:
-            session.run(
-                "UNWIND $names AS name MERGE (:Subreddit {name: name})",
-                names=batch,
-            )
-    log.info("  Neo4j nodes done.")
-
-
-def _neo4j_phase2_rels(driver, rows: list[dict]) -> None:
-    """Phase 2: MATCH existing nodes, CREATE relationships (no MERGE on rels)."""
-    log.info("Neo4j phase 2 — creating %d HYPERLINKS_TO relationships...", len(rows))
-    total = 0
-    for i in range(0, len(rows), NEO4J_REL_BATCH):
-        batch = rows[i : i + NEO4J_REL_BATCH]
-        payload = [
-            {
-                "src":             r["source"],
-                "tgt":             r["target"],
-                "post_id":         r["post_id"],
-                "timestamp":       r["timestamp"].isoformat(),
-                "source_type":     r["source_type"],
-                "post_label":      r["post_label"],
-                "post_properties": r["post_properties"],  # None → null
-            }
-            for r in batch
-        ]
-        with driver.session() as session:
-            session.run(
-                """
-                UNWIND $rels AS rel
-                MATCH (src:Subreddit {name: rel.src})
-                MATCH (tgt:Subreddit {name: rel.tgt})
-                CREATE (src)-[:HYPERLINKS_TO {
-                    post_id:         rel.post_id,
-                    timestamp:       datetime(rel.timestamp),
-                    source_type:     rel.source_type,
-                    post_label:      rel.post_label,
-                    post_properties: rel.post_properties
-                }]->(tgt)
-                """,
-                rels=payload,
-            )
-        total += len(batch)
-        if total % 50_000 == 0 or total == len(rows):
-            log.info("  Neo4j: %d / %d relationships created...", total, len(rows))
-
-
-def load_neo4j(all_rows: list[dict]) -> None:
-    log.info("=== Neo4j Load (two-phase) ===")
     t0 = time.perf_counter()
 
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
-    _neo4j_apply_schema(driver)
+    # 1. Load Subreddit Nodes
+    log.info("Loading %d Subreddit nodes into Neo4j...", len(subreddits))
+    sub_names = [{"name": name} for name in subreddits.keys()]
+    with driver.session() as session:
+        for i in range(0, len(sub_names), BATCH_SIZE_NEO):
+            batch = sub_names[i : i + BATCH_SIZE_NEO]
+            session.run("""
+                UNWIND $batch AS item
+                CREATE (:Subreddit {name: item.name})
+            """, batch=batch)
 
-    names = {r["source"] for r in all_rows} | {r["target"] for r in all_rows}
-    _neo4j_phase1_nodes(driver, names)
-    _neo4j_phase2_rels(driver, all_rows)
+    # Build memory lookup for hyperlinks: post_int_id -> list of target subreddit integer IDs
+    links_by_post: dict[int, list[int]] = {}
+    for pid_int, tgt_int in hyperlinks:
+        links_by_post.setdefault(pid_int, []).append(tgt_int)
+
+    # Invert subreddits lookup: id -> name
+    sub_id_to_name = {v: k for k, v in subreddits.items()}
+
+    # 2. Load Posts and Relationships in batches
+    log.info("Loading %d Post nodes and relationships into Neo4j...", len(posts))
+    post_batches = []
+    current_batch = []
+
+    for p in posts:
+        # p: (post_int_id, post_id, src_id, ts, type, label, props_pg, props_list, src_name)
+        post_int_id = p[0]
+        tgt_ids = links_by_post.get(post_int_id, [])
+        tgt_names = [sub_id_to_name[tid] for tid in tgt_ids]
+
+        # Format timestamp for Neo4j datetime()
+        ts_neo = p[3].replace(" ", "T")
+
+        current_batch.append({
+            "pid":   p[1],
+            "src":   p[8],
+            "tgts":  tgt_names,
+            "ts":    ts_neo,
+            "type":  p[4],
+            "label": p[5],
+            "props": p[7],
+        })
+
+        if len(current_batch) >= BATCH_SIZE_NEO:
+            post_batches.append(current_batch)
+            current_batch = []
+    if current_batch:
+        post_batches.append(current_batch)
+
+    with driver.session() as session:
+        for idx, batch in enumerate(post_batches, 1):
+            if idx % 50 == 0 or idx == len(post_batches):
+                log.info("  -> Processing Post batch %d/%d...", idx, len(post_batches))
+            session.run("""
+                UNWIND $batch AS row
+                MATCH (src:Subreddit {name: row.src})
+                CREATE (p:Post {
+                    post_id:         row.pid,
+                    timestamp:       datetime(row.ts),
+                    source_type:     row.type,
+                    post_label:      row.label,
+                    post_properties: row.props
+                })
+                CREATE (src)-[:POSTED]->(p)
+                WITH p, row
+                UNWIND row.tgts AS tgt_name
+                MATCH (tgt:Subreddit {name: tgt_name})
+                CREATE (p)-[:REFERENCES]->(tgt)
+            """, batch=batch)
 
     driver.close()
-    log.info(
-        "Neo4j load complete: %d nodes, %d relationships in %.1fs",
-        len(names), len(all_rows), time.perf_counter() - t0,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Row-count verification
-# ---------------------------------------------------------------------------
-
-def verify_counts(pg_only: bool, neo4j_only: bool) -> None:
-    log.info("=== Row-Count Verification ===")
-    pg_sub = pg_hl = neo_sub = neo_hl = None
-
-    if not neo4j_only:
-        conn = psycopg2.connect(**PG_CONFIG)
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM subreddits")
-            pg_sub = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM hyperlinks")
-            pg_hl = cur.fetchone()[0]
-        conn.close()
-        log.info("  PostgreSQL — subreddits: %d, hyperlinks: %d", pg_sub, pg_hl)
-
-    if not pg_only:
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
-        with driver.session() as session:
-            neo_sub = session.run("MATCH (s:Subreddit) RETURN count(s) AS n").single()["n"]
-            neo_hl  = session.run("MATCH ()-[r:HYPERLINKS_TO]->() RETURN count(r) AS n").single()["n"]
-        driver.close()
-        log.info("  Neo4j — Subreddit nodes: %d, HYPERLINKS_TO: %d", neo_sub, neo_hl)
-
-    if pg_sub is not None and neo_sub is not None:
-        match = (pg_sub == neo_sub) and (pg_hl == neo_hl)
-        if match:
-            log.info("  ✓ Counts match between PostgreSQL and Neo4j.")
-        else:
-            log.warning(
-                "COUNT MISMATCH! PG(%d subs, %d hl) vs Neo4j(%d nodes, %d rels)",
-                pg_sub, pg_hl, neo_sub, neo_hl,
-            )
+    el = time.perf_counter() - t0
+    log.info("Neo4j bulk data load finished in %.2f s.", el)
 
 
 # ---------------------------------------------------------------------------
@@ -394,32 +307,14 @@ def verify_counts(pg_only: bool, neo4j_only: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="ETL loader for the Reddit benchmark.")
-    parser.add_argument("--pg-only",    action="store_true", help="Load PostgreSQL only")
-    parser.add_argument("--neo4j-only", action="store_true", help="Load Neo4j only")
-    parser.add_argument(
-        "--limit", type=int, default=None, metavar="N",
-        help="Cap rows per TSV file (useful for quick smoke tests)",
-    )
-    args = parser.parse_args()
+    subreddits, posts, hyperlinks = parse_dataset()
+    if not subreddits:
+        log.error("No data found! Verify TSV files exist in data/ directory.")
+        sys.exit(1)
 
-    t_global = time.perf_counter()
-
-    log.info("Reading SNAP dataset files...")
-    all_rows: list[dict] = []
-    for source_type in ("body", "title"):
-        for row in iter_rows(source_type, limit=args.limit):
-            all_rows.append(row)
-    log.info("Total rows to load: %d", len(all_rows))
-
-    if not args.neo4j_only:
-        load_postgres(all_rows)
-
-    if not args.pg_only:
-        load_neo4j(all_rows)
-
-    verify_counts(args.pg_only, args.neo4j_only)
-    log.info("All done in %.1fs.", time.perf_counter() - t_global)
+    load_postgresql(subreddits, posts, hyperlinks)
+    load_neo4j(subreddits, posts, hyperlinks)
+    log.info("=== ETL Pipeline Complete! Ready for benchmarking ===")
 
 
 if __name__ == "__main__":

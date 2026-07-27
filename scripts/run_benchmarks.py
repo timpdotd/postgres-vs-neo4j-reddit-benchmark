@@ -2,6 +2,9 @@
 """
 run_benchmarks.py — PostgreSQL vs Neo4j multi-metric benchmark runner.
 
+Adapted for the 3NF Normalized Relational Schema and Multi-Node Property Graph Schema
+to comply with FAQ Q12 non-trivial modeling requirements.
+
 Metrics captured per query per database:
   PostgreSQL (via EXPLAIN ANALYZE BUFFERS FORMAT JSON):
     - planning_ms       : query planner time (server-side)
@@ -19,9 +22,6 @@ Metrics captured per query per database:
     - cold_ms           : first-access wall-clock time (cold-ish cache)
     - result_count      : number of rows returned
     - timing variability: stdev and coefficient of variation over warm runs
-
-Usage:
-    python scripts/run_benchmarks.py [--runs N] [--output PATH] [--pg-only] [--neo4j-only]
 """
 
 import argparse
@@ -67,43 +67,46 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Query registry
+# Query registry (Adapted for 3NF & Multi-Node Property Graph Schema)
 # ---------------------------------------------------------------------------
 
 QUERIES: list[dict[str, Any]] = [
     {
         "id": "T1-B", "name": "All outgoing links from seed", "tier": 1,
         "pg_sql": """
-            SELECT s_tgt.name, h.post_id, h.timestamp, h.source_type, h.post_label
-            FROM hyperlinks h
-            JOIN subreddits s_src ON s_src.id = h.source_subreddit_id
+            SELECT s_tgt.name AS target_subreddit, p.post_id, p.timestamp, p.source_type, p.post_label
+            FROM posts p
+            JOIN subreddits s_src ON s_src.id = p.source_subreddit_id
+            JOIN hyperlinks h     ON h.post_id = p.id
             JOIN subreddits s_tgt ON s_tgt.id = h.target_subreddit_id
             WHERE s_src.name = %(seed)s
-            ORDER BY h.timestamp DESC
+            ORDER BY p.timestamp DESC
         """,
         "pg_params":  lambda s: {"seed": s["seed"]},
         "neo_cypher": """
-            MATCH (src:Subreddit {name: $seed})-[h:HYPERLINKS_TO]->(tgt:Subreddit)
-            RETURN tgt.name AS target, h.post_id, h.timestamp, h.source_type, h.post_label
-            ORDER BY h.timestamp DESC
+            MATCH (src:Subreddit {name: $seed})-[:POSTED]->(p:Post)-[:REFERENCES]->(tgt:Subreddit)
+            RETURN tgt.name AS target_subreddit, p.post_id AS post_id, p.timestamp AS timestamp,
+                   p.source_type AS source_type, p.post_label AS post_label
+            ORDER BY p.timestamp DESC
         """,
         "neo_params": lambda s: {"seed": s["seed"]},
     },
     {
         "id": "T1-C", "name": "Hostile links only from seed", "tier": 1,
         "pg_sql": """
-            SELECT s_tgt.name, h.post_id, h.timestamp, h.source_type
-            FROM hyperlinks h
-            JOIN subreddits s_src ON s_src.id = h.source_subreddit_id
+            SELECT s_tgt.name AS target_subreddit, p.post_id, p.timestamp, p.source_type
+            FROM posts p
+            JOIN subreddits s_src ON s_src.id = p.source_subreddit_id
+            JOIN hyperlinks h     ON h.post_id = p.id
             JOIN subreddits s_tgt ON s_tgt.id = h.target_subreddit_id
-            WHERE s_src.name = %(seed)s AND h.post_label = -1
-            ORDER BY h.timestamp DESC
+            WHERE s_src.name = %(seed)s AND p.post_label = -1
+            ORDER BY p.timestamp DESC
         """,
         "pg_params":  lambda s: {"seed": s["seed"]},
         "neo_cypher": """
-            MATCH (src:Subreddit {name: $seed})-[h:HYPERLINKS_TO {post_label: -1}]->(tgt:Subreddit)
-            RETURN tgt.name AS target, h.post_id, h.timestamp, h.source_type
-            ORDER BY h.timestamp DESC
+            MATCH (src:Subreddit {name: $seed})-[:POSTED]->(p:Post {post_label: -1})-[:REFERENCES]->(tgt:Subreddit)
+            RETURN tgt.name AS target_subreddit, p.post_id AS post_id, p.timestamp AS timestamp, p.source_type AS source_type
+            ORDER BY p.timestamp DESC
         """,
         "neo_params": lambda s: {"seed": s["seed"]},
     },
@@ -111,13 +114,15 @@ QUERIES: list[dict[str, Any]] = [
         "id": "T2-A", "name": "Global in-degree ranking (top 20)", "tier": 2,
         "pg_sql": """
             SELECT s.name AS subreddit, COUNT(*) AS in_degree
-            FROM hyperlinks h JOIN subreddits s ON s.id = h.target_subreddit_id
-            GROUP BY s.name ORDER BY in_degree DESC LIMIT 20
+            FROM hyperlinks h
+            JOIN subreddits s ON s.id = h.target_subreddit_id
+            GROUP BY s.name
+            ORDER BY in_degree DESC LIMIT 20
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
-            MATCH ()-[h:HYPERLINKS_TO]->(tgt:Subreddit)
-            RETURN tgt.name AS subreddit, count(h) AS in_degree
+            MATCH ()-[:REFERENCES]->(tgt:Subreddit)
+            RETURN tgt.name AS subreddit, count(*) AS in_degree
             ORDER BY in_degree DESC LIMIT 20
         """,
         "neo_params": lambda s: None,
@@ -126,14 +131,16 @@ QUERIES: list[dict[str, Any]] = [
         "id": "T2-B", "name": "Top-20 subreddits by hostile link count", "tier": 2,
         "pg_sql": """
             SELECT s.name AS subreddit, COUNT(*) AS hostile_count
-            FROM hyperlinks h JOIN subreddits s ON s.id = h.source_subreddit_id
-            WHERE h.post_label = -1
-            GROUP BY s.name ORDER BY hostile_count DESC LIMIT 20
+            FROM posts p
+            JOIN subreddits s ON s.id = p.source_subreddit_id
+            WHERE p.post_label = -1
+            GROUP BY s.name
+            ORDER BY hostile_count DESC LIMIT 20
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
-            MATCH (src:Subreddit)-[:HYPERLINKS_TO {post_label: -1}]->()
-            RETURN src.name AS subreddit, count(*) AS hostile_count
+            MATCH (src:Subreddit)-[:POSTED]->(p:Post {post_label: -1})
+            RETURN src.name AS subreddit, count(p) AS hostile_count
             ORDER BY hostile_count DESC LIMIT 20
         """,
         "neo_params": lambda s: None,
@@ -143,24 +150,29 @@ QUERIES: list[dict[str, Any]] = [
         "pg_sql": """
             WITH targets_a AS (
                 SELECT DISTINCT h.target_subreddit_id
-                FROM hyperlinks h JOIN subreddits s ON s.id = h.source_subreddit_id
+                FROM posts p
+                JOIN subreddits s ON s.id = p.source_subreddit_id
+                JOIN hyperlinks h ON h.post_id = p.id
                 WHERE s.name = %(seed_a)s
             ),
             targets_b AS (
                 SELECT DISTINCT h.target_subreddit_id
-                FROM hyperlinks h JOIN subreddits s ON s.id = h.source_subreddit_id
+                FROM posts p
+                JOIN subreddits s ON s.id = p.source_subreddit_id
+                JOIN hyperlinks h ON h.post_id = p.id
                 WHERE s.name = %(seed_b)s
             )
             SELECT s.name AS shared_target
-            FROM targets_a a JOIN targets_b b USING (target_subreddit_id)
+            FROM targets_a a
+            JOIN targets_b b USING (target_subreddit_id)
             JOIN subreddits s ON s.id = a.target_subreddit_id
             ORDER BY s.name LIMIT 25
         """,
         "pg_params":  lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
         "neo_cypher": """
-            MATCH (a:Subreddit {name: $seed_a})-[:HYPERLINKS_TO]->(shared:Subreddit)
+            MATCH (a:Subreddit {name: $seed_a})-[:POSTED]->(:Post)-[:REFERENCES]->(shared:Subreddit)
             WITH shared
-            MATCH (b:Subreddit {name: $seed_b})-[:HYPERLINKS_TO]->(shared)
+            MATCH (b:Subreddit {name: $seed_b})-[:POSTED]->(:Post)-[:REFERENCES]->(shared)
             RETURN shared.name AS shared_target ORDER BY shared_target LIMIT 25
         """,
         "neo_params": lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
@@ -169,25 +181,30 @@ QUERIES: list[dict[str, Any]] = [
         "id": "T3-C", "name": "Common hostile attackers of seed_a and seed_b", "tier": 3,
         "pg_sql": """
             WITH attackers_a AS (
-                SELECT DISTINCT h.source_subreddit_id
-                FROM hyperlinks h JOIN subreddits s ON s.id = h.target_subreddit_id
-                WHERE s.name = %(seed_a)s AND h.post_label = -1
+                SELECT DISTINCT p.source_subreddit_id
+                FROM posts p
+                JOIN hyperlinks h ON h.post_id = p.id
+                JOIN subreddits s ON s.id = h.target_subreddit_id
+                WHERE s.name = %(seed_a)s AND p.post_label = -1
             ),
             attackers_b AS (
-                SELECT DISTINCT h.source_subreddit_id
-                FROM hyperlinks h JOIN subreddits s ON s.id = h.target_subreddit_id
-                WHERE s.name = %(seed_b)s AND h.post_label = -1
+                SELECT DISTINCT p.source_subreddit_id
+                FROM posts p
+                JOIN hyperlinks h ON h.post_id = p.id
+                JOIN subreddits s ON s.id = h.target_subreddit_id
+                WHERE s.name = %(seed_b)s AND p.post_label = -1
             )
             SELECT s.name AS common_attacker
-            FROM attackers_a a JOIN attackers_b b USING (source_subreddit_id)
+            FROM attackers_a a
+            JOIN attackers_b b USING (source_subreddit_id)
             JOIN subreddits s ON s.id = a.source_subreddit_id
             ORDER BY s.name LIMIT 25
         """,
         "pg_params":  lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
         "neo_cypher": """
-            MATCH (atk:Subreddit)-[:HYPERLINKS_TO {post_label: -1}]->(a:Subreddit {name: $seed_a})
+            MATCH (atk:Subreddit)-[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(a:Subreddit {name: $seed_a})
             WITH atk
-            MATCH (atk)-[:HYPERLINKS_TO {post_label: -1}]->(b:Subreddit {name: $seed_b})
+            MATCH (atk)-[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(b:Subreddit {name: $seed_b})
             RETURN atk.name AS common_attacker ORDER BY atk.name LIMIT 25
         """,
         "neo_params": lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
@@ -196,22 +213,22 @@ QUERIES: list[dict[str, Any]] = [
         "id": "T4-A", "name": "Global mutual hostile pairs", "tier": 4,
         "pg_sql": """
             SELECT s_a.name AS sub_a, s_b.name AS sub_b, COUNT(*) AS mutual_hostile_links
-            FROM hyperlinks ab
-            JOIN hyperlinks ba
-                ON  ba.source_subreddit_id = ab.target_subreddit_id
-                AND ba.target_subreddit_id = ab.source_subreddit_id
-                AND ba.post_label = -1
-            JOIN subreddits s_a ON s_a.id = ab.source_subreddit_id
-            JOIN subreddits s_b ON s_b.id = ab.target_subreddit_id
-            WHERE ab.post_label = -1 AND ab.source_subreddit_id < ab.target_subreddit_id
+            FROM posts p_ab
+            JOIN hyperlinks h_ab ON h_ab.post_id = p_ab.id
+            JOIN posts p_ba      ON p_ba.source_subreddit_id = h_ab.target_subreddit_id
+            JOIN hyperlinks h_ba ON h_ba.post_id = p_ba.id AND h_ba.target_subreddit_id = p_ab.source_subreddit_id
+            JOIN subreddits s_a  ON s_a.id = p_ab.source_subreddit_id
+            JOIN subreddits s_b  ON s_b.id = h_ab.target_subreddit_id
+            WHERE p_ab.post_label = -1 AND p_ba.post_label = -1
+              AND p_ab.source_subreddit_id < h_ab.target_subreddit_id
             GROUP BY s_a.name, s_b.name ORDER BY mutual_hostile_links DESC LIMIT 20
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
-            MATCH (a:Subreddit)-[ab:HYPERLINKS_TO {post_label: -1}]->(b:Subreddit)
-                  -[:HYPERLINKS_TO {post_label: -1}]->(a)
+            MATCH (a:Subreddit)-[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(b:Subreddit)
+                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(a)
             WHERE id(a) < id(b)
-            RETURN a.name AS sub_a, b.name AS sub_b, count(ab) AS mutual_hostile_links
+            RETURN a.name AS sub_a, b.name AS sub_b, count(*) AS mutual_hostile_links
             ORDER BY mutual_hostile_links DESC LIMIT 20
         """,
         "neo_params": lambda s: None,
@@ -223,7 +240,9 @@ QUERIES: list[dict[str, Any]] = [
                 SELECT s.id, 0, ARRAY[s.id] FROM subreddits s WHERE s.name = %(seed_bfs)s
                 UNION ALL
                 SELECT h.target_subreddit_id, b.depth + 1, b.path || h.target_subreddit_id
-                FROM bfs b JOIN hyperlinks h ON h.source_subreddit_id = b.node_id
+                FROM bfs b
+                JOIN posts p      ON p.source_subreddit_id = b.node_id
+                JOIN hyperlinks h ON h.post_id = p.id
                 WHERE b.depth < 3 AND NOT (h.target_subreddit_id = ANY(b.path))
             )
             SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
@@ -233,9 +252,9 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_bfs": s["seed_bfs"]},
         "neo_cypher": """
-            MATCH p = (src:Subreddit {name: $seed_bfs})-[:HYPERLINKS_TO*1..3]->(tgt:Subreddit)
+            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..6]->(tgt:Subreddit)
             WHERE src <> tgt
-            WITH tgt, min(length(p)) AS min_hops
+            WITH tgt, min(length(p) / 2) AS min_hops
             RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
         """,
         "neo_params": lambda s: {"seed_bfs": s["seed_bfs"]},
@@ -244,24 +263,25 @@ QUERIES: list[dict[str, Any]] = [
         "id": "T5-A", "name": "3-node hostile cycles seeded", "tier": 5,
         "pg_sql": """
             SELECT s_a.name AS node_a, s_b.name AS node_b, s_c.name AS node_c
-            FROM hyperlinks ab
-            JOIN hyperlinks bc ON bc.source_subreddit_id = ab.target_subreddit_id AND bc.post_label = -1
-            JOIN hyperlinks ca
-                ON ca.source_subreddit_id = bc.target_subreddit_id
-                AND ca.target_subreddit_id = ab.source_subreddit_id AND ca.post_label = -1
-            JOIN subreddits s_a ON s_a.id = ab.source_subreddit_id
-            JOIN subreddits s_b ON s_b.id = ab.target_subreddit_id
-            JOIN subreddits s_c ON s_c.id = bc.target_subreddit_id
-            WHERE ab.post_label = -1 AND s_a.name = %(seed)s
-              AND ab.target_subreddit_id < bc.target_subreddit_id
+            FROM posts p_ab
+            JOIN hyperlinks h_ab ON h_ab.post_id = p_ab.id
+            JOIN posts p_bc      ON p_bc.source_subreddit_id = h_ab.target_subreddit_id AND p_bc.post_label = -1
+            JOIN hyperlinks h_bc ON h_bc.post_id = p_bc.id
+            JOIN posts p_ca      ON p_ca.source_subreddit_id = h_bc.target_subreddit_id AND p_ca.post_label = -1
+            JOIN hyperlinks h_ca ON h_ca.post_id = p_ca.id AND h_ca.target_subreddit_id = p_ab.source_subreddit_id
+            JOIN subreddits s_a  ON s_a.id = p_ab.source_subreddit_id
+            JOIN subreddits s_b  ON s_b.id = h_ab.target_subreddit_id
+            JOIN subreddits s_c  ON s_c.id = h_bc.target_subreddit_id
+            WHERE p_ab.post_label = -1 AND s_a.name = %(seed)s
+              AND h_ab.target_subreddit_id < h_bc.target_subreddit_id
             LIMIT 50
         """,
         "pg_params":  lambda s: {"seed": s["seed"]},
         "neo_cypher": """
             MATCH (a:Subreddit {name: $seed})
-                  -[:HYPERLINKS_TO {post_label: -1}]->(b:Subreddit)
-                  -[:HYPERLINKS_TO {post_label: -1}]->(c:Subreddit)
-                  -[:HYPERLINKS_TO {post_label: -1}]->(a)
+                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(b:Subreddit)
+                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(c:Subreddit)
+                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(a)
             WHERE id(b) < id(c)
             RETURN a.name AS node_a, b.name AS node_b, c.name AS node_c LIMIT 50
         """,
@@ -274,7 +294,9 @@ QUERIES: list[dict[str, Any]] = [
                 SELECT s.id, 0, ARRAY[s.id] FROM subreddits s WHERE s.name = %(seed_bfs)s
                 UNION ALL
                 SELECT h.target_subreddit_id, b.depth + 1, b.path || h.target_subreddit_id
-                FROM bfs b JOIN hyperlinks h ON h.source_subreddit_id = b.node_id
+                FROM bfs b
+                JOIN posts p      ON p.source_subreddit_id = b.node_id
+                JOIN hyperlinks h ON h.post_id = p.id
                 WHERE b.depth < 4 AND NOT (h.target_subreddit_id = ANY(b.path))
             )
             SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
@@ -284,9 +306,9 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_bfs": s["seed_bfs"]},
         "neo_cypher": """
-            MATCH p = (src:Subreddit {name: $seed_bfs})-[:HYPERLINKS_TO*1..4]->(tgt:Subreddit)
+            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..8]->(tgt:Subreddit)
             WHERE src <> tgt
-            WITH tgt, min(length(p)) AS min_hops
+            WITH tgt, min(length(p) / 2) AS min_hops
             RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
         """,
         "neo_params": lambda s: {"seed_bfs": s["seed_bfs"]},
@@ -302,14 +324,16 @@ def pick_seeds(conn) -> dict[str, str]:
     with conn.cursor() as cur:
         cur.execute("""
             SELECT s.name, COUNT(*) AS c
-            FROM hyperlinks h JOIN subreddits s ON s.id = h.source_subreddit_id
+            FROM posts p
+            JOIN subreddits s ON s.id = p.source_subreddit_id
+            JOIN hyperlinks h ON h.post_id = p.id
             GROUP BY s.name ORDER BY c DESC LIMIT 210
         """)
         by_outdeg = cur.fetchall()
         cur.execute("""
-            SELECT s.name FROM hyperlinks h
-            JOIN subreddits s ON s.id = h.source_subreddit_id
-            WHERE h.post_label = -1
+            SELECT s.name FROM posts p
+            JOIN subreddits s ON s.id = p.source_subreddit_id
+            WHERE p.post_label = -1
             GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 1
         """)
         top_hostile = cur.fetchone()[0]
@@ -431,7 +455,7 @@ def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
         "stdev_execution_ms":  stdev(valid) if len(valid) > 1 else 0.0,
         "min_execution_ms":    min(valid) if valid else None,
         "max_execution_ms":    max(valid) if valid else None,
-        "cv_pct":              cv,                          # coefficient of variation
+        "cv_pct":              cv,
         "cold_warm_delta_ms":  cold_ms - med_exec if med_exec else None,
         # Planning
         "median_planning_ms":  median(plan_ms_list) if plan_ms_list else None,
@@ -544,8 +568,8 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
         "warm_runs":            n_runs,
         "warm_consumed_ms":     consumed_list,
         "warm_available_ms":    available_list,
-        # Primary timing (consumed = headline metric for consistency with pg execution_ms)
-        "warm_execution_ms":    consumed_list,          # alias used by notebook
+        # Primary timing
+        "warm_execution_ms":    consumed_list,
         "median_execution_ms":  med_c,
         "median_consumed_ms":   med_c,
         "median_available_ms":  median(valid_a) if valid_a else None,

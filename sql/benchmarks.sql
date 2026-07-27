@@ -1,278 +1,199 @@
 -- =============================================================================
--- SQL Benchmark Queries — Reddit Hyperlink Network
--- 10 queries across 5 difficulty tiers for PostgreSQL vs Neo4j comparison.
---
--- Standalone usage (psql):
---   \set seed         'leagueoflegends'
---   \set seed_a       'askreddit'
---   \set seed_b       'worldnews'
---   \set seed_bfs     'dataisbeautiful'
---
--- The Python runner (run_benchmarks.py) auto-selects seeds from the data
--- and substitutes them using psycopg2 named parameters %(name)s.
---
--- Each query here is wrapped with EXPLAIN (ANALYZE, FORMAT JSON) so the file
--- can be used for manual inspection. The runner strips the EXPLAIN prefix and
--- adds it back programmatically to capture server-side Execution Time.
+-- Benchmark Query Suite: PostgreSQL (3NF Normalized Schema)
+-- 10 Queries across 5 Complexity Tiers
+-- All queries wrapped in EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) for server timing
 -- =============================================================================
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- TIER 1: Point Lookups & Filtering
+-- ─────────────────────────────────────────────────────────────────────────────
 
--- ─────────────────────────────────────────────────────────────────────────────
--- T1-B │ TIER 1 │ All outgoing links from a given subreddit
--- ─────────────────────────────────────────────────────────────────────────────
--- Measures: single composite index scan (idx_hl_source).
--- Expected: < 5 ms (returns all links for one subreddit, ordered by time).
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
-SELECT
-    s_tgt.name  AS target_subreddit,
-    h.post_id,
-    h.timestamp,
-    h.source_type,
-    h.post_label
-FROM       hyperlinks  h
-JOIN subreddits s_src ON s_src.id = h.source_subreddit_id
+-- T1-B: All outgoing links from seed
+-- Access Pattern: 3-table join (subreddits -> posts -> hyperlinks -> subreddits).
+-- Uses index on subreddits(name) and posts(source_subreddit_id).
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT s_tgt.name AS target_subreddit, p.post_id, p.timestamp, p.source_type, p.post_label
+FROM posts p
+JOIN subreddits s_src ON s_src.id = p.source_subreddit_id
+JOIN hyperlinks h     ON h.post_id = p.id
 JOIN subreddits s_tgt ON s_tgt.id = h.target_subreddit_id
-WHERE s_src.name = :'seed'
-ORDER BY h.timestamp DESC;
+WHERE s_src.name = 'leagueoflegends'
+ORDER BY p.timestamp DESC;
 
-
--- ─────────────────────────────────────────────────────────────────────────────
--- T1-C │ TIER 1 │ Hostile links only from a given subreddit
--- ─────────────────────────────────────────────────────────────────────────────
--- Measures: composite index scan (idx_hl_source_label) with post_label = -1.
--- Expected: < 5 ms (subset of T1-B; composite index makes this equally fast).
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
-SELECT
-    s_tgt.name  AS target_subreddit,
-    h.post_id,
-    h.timestamp,
-    h.source_type
-FROM       hyperlinks  h
-JOIN subreddits s_src ON s_src.id = h.source_subreddit_id
+-- T1-C: Hostile links only from seed
+-- Access Pattern: Same as T1-B but utilizes compound index idx_posts_source_label.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT s_tgt.name AS target_subreddit, p.post_id, p.timestamp, p.source_type
+FROM posts p
+JOIN subreddits s_src ON s_src.id = p.source_subreddit_id
+JOIN hyperlinks h     ON h.post_id = p.id
 JOIN subreddits s_tgt ON s_tgt.id = h.target_subreddit_id
-WHERE s_src.name = :'seed'
-  AND h.post_label = -1
-ORDER BY h.timestamp DESC;
+WHERE s_src.name = 'leagueoflegends' AND p.post_label = -1
+ORDER BY p.timestamp DESC;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- T2-A │ TIER 2 │ Global in-degree ranking (top-20 most-linked-to subreddits)
+-- TIER 2: Global Aggregations
 -- ─────────────────────────────────────────────────────────────────────────────
--- Measures: full scan of hyperlinks + GROUP BY + sort — no parameter needed.
--- PostgreSQL may use parallel workers (shared_buffers tuning in docker-compose).
--- Expected: 200–800 ms (858k rows aggregated).
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
-SELECT
-    s.name      AS subreddit,
-    COUNT(*)    AS in_degree
-FROM       hyperlinks  h
+
+-- T2-A: Global in-degree ranking (top 20)
+-- Access Pattern: Full table scan on hyperlinks aggregated by target_subreddit_id.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT s.name AS subreddit, COUNT(*) AS in_degree
+FROM hyperlinks h
 JOIN subreddits s ON s.id = h.target_subreddit_id
 GROUP BY s.name
 ORDER BY in_degree DESC
 LIMIT 20;
 
-
--- ─────────────────────────────────────────────────────────────────────────────
--- T2-B │ TIER 2 │ Top-20 subreddits by hostile outgoing link count
--- ─────────────────────────────────────────────────────────────────────────────
--- Measures: index scan on post_label + GROUP BY.
--- The partial-scan via idx_hl_source_label makes this faster than T2-A.
--- Expected: 100–500 ms.
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
-SELECT
-    s.name      AS subreddit,
-    COUNT(*)    AS hostile_count
-FROM       hyperlinks  h
-JOIN subreddits s ON s.id = h.source_subreddit_id
-WHERE h.post_label = -1
+-- T2-B: Top-20 subreddits by hostile link count
+-- Access Pattern: Full table scan or index scan on idx_posts_label (= -1) grouped by source.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT s.name AS subreddit, COUNT(*) AS hostile_count
+FROM posts p
+JOIN subreddits s ON s.id = p.source_subreddit_id
+WHERE p.post_label = -1
 GROUP BY s.name
 ORDER BY hostile_count DESC
 LIMIT 20;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- T3-A │ TIER 3 │ 2-hop common targets (subreddits both r/A and r/B link to)
+-- TIER 3: Multi-hop Pattern Matching & Joins
 -- ─────────────────────────────────────────────────────────────────────────────
--- Measures: two index scans + hash join (intersection) + name join.
--- This is the "collaborative filtering" pattern — natural for graph, two CTEs for SQL.
--- Expected: 50–300 ms.
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
+
+-- T3-A: 2-hop common targets of seed_a and seed_b
+-- Access Pattern: Intersection of target subreddits via two CTEs joining posts & hyperlinks.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 WITH targets_a AS (
     SELECT DISTINCT h.target_subreddit_id
-    FROM   hyperlinks h
-    JOIN   subreddits s ON s.id = h.source_subreddit_id
-    WHERE  s.name = :'seed_a'
+    FROM posts p
+    JOIN subreddits s ON s.id = p.source_subreddit_id
+    JOIN hyperlinks h ON h.post_id = p.id
+    WHERE s.name = 'askreddit'
 ),
 targets_b AS (
     SELECT DISTINCT h.target_subreddit_id
-    FROM   hyperlinks h
-    JOIN   subreddits s ON s.id = h.source_subreddit_id
-    WHERE  s.name = :'seed_b'
+    FROM posts p
+    JOIN subreddits s ON s.id = p.source_subreddit_id
+    JOIN hyperlinks h ON h.post_id = p.id
+    WHERE s.name = 'iama'
 )
 SELECT s.name AS shared_target
-FROM   targets_a a
-JOIN   targets_b b USING (target_subreddit_id)
-JOIN   subreddits s ON s.id = a.target_subreddit_id
-ORDER  BY s.name
-LIMIT  25;
+FROM targets_a a
+JOIN targets_b b USING (target_subreddit_id)
+JOIN subreddits s ON s.id = a.target_subreddit_id
+ORDER BY s.name
+LIMIT 25;
 
-
--- ─────────────────────────────────────────────────────────────────────────────
--- T3-C │ TIER 3 │ Common hostile attackers of both r/A and r/B
--- ─────────────────────────────────────────────────────────────────────────────
--- Measures: two index scans filtered by post_label=-1 + hash join.
--- Answers: "which communities attacked both of these targets?"
--- Expected: 50–300 ms.
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
+-- T3-C: Common hostile attackers of seed_a and seed_b
+-- Access Pattern: Reverse 2-hop intersection filtering on post_label = -1.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 WITH attackers_a AS (
-    SELECT DISTINCT h.source_subreddit_id
-    FROM   hyperlinks h
-    JOIN   subreddits s ON s.id = h.target_subreddit_id
-    WHERE  s.name = :'seed_a'
-      AND  h.post_label = -1
+    SELECT DISTINCT p.source_subreddit_id
+    FROM posts p
+    JOIN hyperlinks h ON h.post_id = p.id
+    JOIN subreddits s ON s.id = h.target_subreddit_id
+    WHERE s.name = 'askreddit' AND p.post_label = -1
 ),
 attackers_b AS (
-    SELECT DISTINCT h.source_subreddit_id
-    FROM   hyperlinks h
-    JOIN   subreddits s ON s.id = h.target_subreddit_id
-    WHERE  s.name = :'seed_b'
-      AND  h.post_label = -1
+    SELECT DISTINCT p.source_subreddit_id
+    FROM posts p
+    JOIN hyperlinks h ON h.post_id = p.id
+    JOIN subreddits s ON s.id = h.target_subreddit_id
+    WHERE s.name = 'iama' AND p.post_label = -1
 )
 SELECT s.name AS common_attacker
-FROM   attackers_a a
-JOIN   attackers_b b USING (source_subreddit_id)
-JOIN   subreddits s ON s.id = a.source_subreddit_id
-ORDER  BY s.name
-LIMIT  25;
+FROM attackers_a a
+JOIN attackers_b b USING (source_subreddit_id)
+JOIN subreddits s ON s.id = a.source_subreddit_id
+ORDER BY s.name
+LIMIT 25;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- T4-A │ TIER 4 │ Mutual hostile pairs (A→(-1)→B and B→(-1)→A)
+-- TIER 4: Recursive & Complex Self-Joins
 -- ─────────────────────────────────────────────────────────────────────────────
--- Measures: self-join on hyperlinks twice, deduplicated by src_id < tgt_id.
--- Each pair (A,B) is reported once with total mutual hostile link count.
--- The composite index idx_hl_src_tgt_label is critical for performance.
--- Expected: 1–10 s (self-join on 170k+ hostile edges).
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
-SELECT
-    s_a.name    AS sub_a,
-    s_b.name    AS sub_b,
-    COUNT(*)    AS mutual_hostile_links
-FROM       hyperlinks  ab
-JOIN hyperlinks ba
-    ON  ba.source_subreddit_id = ab.target_subreddit_id
-    AND ba.target_subreddit_id = ab.source_subreddit_id
-    AND ba.post_label          = -1
-JOIN subreddits s_a ON s_a.id = ab.source_subreddit_id
-JOIN subreddits s_b ON s_b.id = ab.target_subreddit_id
-WHERE ab.post_label                 = -1
-  AND ab.source_subreddit_id < ab.target_subreddit_id   -- deduplicate pairs
+
+-- T4-A: Global mutual hostile pairs (A -> B and B -> A both hostile)
+-- Access Pattern: Heavy 6-table self-join across posts and hyperlinks with symmetry breaking.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT s_a.name AS sub_a, s_b.name AS sub_b, COUNT(*) AS mutual_hostile_links
+FROM posts p_ab
+JOIN hyperlinks h_ab ON h_ab.post_id = p_ab.id
+JOIN posts p_ba      ON p_ba.source_subreddit_id = h_ab.target_subreddit_id
+JOIN hyperlinks h_ba ON h_ba.post_id = p_ba.id AND h_ba.target_subreddit_id = p_ab.source_subreddit_id
+JOIN subreddits s_a  ON s_a.id = p_ab.source_subreddit_id
+JOIN subreddits s_b  ON s_b.id = h_ab.target_subreddit_id
+WHERE p_ab.post_label = -1 AND p_ba.post_label = -1
+  AND p_ab.source_subreddit_id < h_ab.target_subreddit_id
 GROUP BY s_a.name, s_b.name
 ORDER BY mutual_hostile_links DESC
 LIMIT 20;
 
-
--- ─────────────────────────────────────────────────────────────────────────────
--- T4-B │ TIER 4 │ Bounded BFS — nodes reachable within 3 hops from seed_bfs
--- ─────────────────────────────────────────────────────────────────────────────
--- Measures: PostgreSQL recursive CTE vs Cypher *1..3 variable-length traversal.
--- Cycle guard: path-array prevents re-visiting nodes already on the current path.
--- seed_bfs is chosen at ~rank 200 by out-degree (medium-low degree node).
--- Expected: 2–20 s in PostgreSQL, < 3 s in Neo4j.
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
+-- T4-B: Bounded BFS shortest path up to depth 3 from seed
+-- Access Pattern: Recursive CTE with array cycle detection joining posts and hyperlinks at each hop.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 WITH RECURSIVE bfs(node_id, depth, path) AS (
-    -- Base: start at seed node, depth 0
     SELECT s.id, 0, ARRAY[s.id]
-    FROM   subreddits s
-    WHERE  s.name = :'seed_bfs'
-
+    FROM subreddits s
+    WHERE s.name = 'bestof'
     UNION ALL
-
-    -- Step: follow one outgoing edge, prevent revisiting nodes on current path
-    SELECT h.target_subreddit_id,
-           b.depth + 1,
-           b.path || h.target_subreddit_id
-    FROM   bfs b
-    JOIN   hyperlinks h ON h.source_subreddit_id = b.node_id
-    WHERE  b.depth < 3
-      AND  NOT (h.target_subreddit_id = ANY(b.path))
+    SELECT h.target_subreddit_id, b.depth + 1, b.path || h.target_subreddit_id
+    FROM bfs b
+    JOIN posts p      ON p.source_subreddit_id = b.node_id
+    JOIN hyperlinks h ON h.post_id = p.id
+    WHERE b.depth < 3 AND NOT (h.target_subreddit_id = ANY(b.path))
 )
-SELECT s.name              AS reachable_subreddit,
-       MIN(bfs.depth)      AS min_hops
-FROM   bfs
-JOIN   subreddits s ON s.id = bfs.node_id
-WHERE  bfs.depth > 0          -- exclude the seed itself
-GROUP  BY s.name
-ORDER  BY min_hops, s.name
-LIMIT  500;
+SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
+FROM bfs
+JOIN subreddits s ON s.id = bfs.node_id
+WHERE bfs.depth > 0
+GROUP BY s.name
+ORDER BY min_hops, s.name
+LIMIT 500;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- T5-A │ TIER 5 │ 3-node hostile-sentiment cycles (echo chambers), seeded
+-- TIER 5: Graph Traversal & Cycle Detection (Hostile Workload for Relational)
 -- ─────────────────────────────────────────────────────────────────────────────
--- Finds triangles:  seed →(-1)→ B →(-1)→ C →(-1)→ seed
--- Seeded at 'seed' (top hostile sender) to bound the search.
--- Deduplication: report each triangle once (tgt_B_id < tgt_C_id).
--- Expected: 5–60 s in PostgreSQL, 2–15 s in Neo4j.
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
-SELECT
-    s_a.name    AS node_a,
-    s_b.name    AS node_b,
-    s_c.name    AS node_c
-FROM       hyperlinks  ab
-JOIN hyperlinks bc
-    ON  bc.source_subreddit_id = ab.target_subreddit_id
-    AND bc.post_label          = -1
-JOIN hyperlinks ca
-    ON  ca.source_subreddit_id = bc.target_subreddit_id
-    AND ca.target_subreddit_id = ab.source_subreddit_id
-    AND ca.post_label          = -1
-JOIN subreddits s_a ON s_a.id = ab.source_subreddit_id
-JOIN subreddits s_b ON s_b.id = ab.target_subreddit_id
-JOIN subreddits s_c ON s_c.id = bc.target_subreddit_id
-WHERE ab.post_label = -1
-  AND s_a.name = :'seed'
-  AND ab.target_subreddit_id < bc.target_subreddit_id   -- deduplicate B,C pair
+
+-- T5-A: 3-node hostile cycles seeded at seed (A -> B -> C -> A all hostile)
+-- Access Pattern: 9-table join (3x posts, 3x hyperlinks, 3x subreddits).
+-- Highlights relational join complexity vs graph pattern matching.
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT s_a.name AS node_a, s_b.name AS node_b, s_c.name AS node_c
+FROM posts p_ab
+JOIN hyperlinks h_ab ON h_ab.post_id = p_ab.id
+JOIN posts p_bc      ON p_bc.source_subreddit_id = h_ab.target_subreddit_id AND p_bc.post_label = -1
+JOIN hyperlinks h_bc ON h_bc.post_id = p_bc.id
+JOIN posts p_ca      ON p_ca.source_subreddit_id = h_bc.target_subreddit_id AND p_ca.post_label = -1
+JOIN hyperlinks h_ca ON h_ca.post_id = p_ca.id AND h_ca.target_subreddit_id = p_ab.source_subreddit_id
+JOIN subreddits s_a  ON s_a.id = p_ab.source_subreddit_id
+JOIN subreddits s_b  ON s_b.id = h_ab.target_subreddit_id
+JOIN subreddits s_c  ON s_c.id = h_bc.target_subreddit_id
+WHERE p_ab.post_label = -1 AND s_a.name = 'leagueoflegends'
+  AND h_ab.target_subreddit_id < h_bc.target_subreddit_id
 LIMIT 50;
 
-
--- ─────────────────────────────────────────────────────────────────────────────
--- T5-B │ TIER 5 │ Bounded BFS — nodes reachable within 4 hops from seed_bfs
--- ─────────────────────────────────────────────────────────────────────────────
--- Same seed as T4-B, depth extended to 4 — directly shows how one extra hop
--- affects execution time (key chart for the comparison report).
--- Expected: 10 s – 3 min in PostgreSQL, 5–60 s in Neo4j.
--- ─────────────────────────────────────────────────────────────────────────────
-EXPLAIN (ANALYZE, FORMAT JSON)
+-- T5-B: Bounded BFS shortest path up to depth 4 from seed
+-- Access Pattern: 4-hop recursive CTE (working set expansion challenges buffer cache).
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 WITH RECURSIVE bfs(node_id, depth, path) AS (
     SELECT s.id, 0, ARRAY[s.id]
-    FROM   subreddits s
-    WHERE  s.name = :'seed_bfs'
-
+    FROM subreddits s
+    WHERE s.name = 'bestof'
     UNION ALL
-
-    SELECT h.target_subreddit_id,
-           b.depth + 1,
-           b.path || h.target_subreddit_id
-    FROM   bfs b
-    JOIN   hyperlinks h ON h.source_subreddit_id = b.node_id
-    WHERE  b.depth < 4
-      AND  NOT (h.target_subreddit_id = ANY(b.path))
+    SELECT h.target_subreddit_id, b.depth + 1, b.path || h.target_subreddit_id
+    FROM bfs b
+    JOIN posts p      ON p.source_subreddit_id = b.node_id
+    JOIN hyperlinks h ON h.post_id = p.id
+    WHERE b.depth < 4 AND NOT (h.target_subreddit_id = ANY(b.path))
 )
-SELECT s.name              AS reachable_subreddit,
-       MIN(bfs.depth)      AS min_hops
-FROM   bfs
-JOIN   subreddits s ON s.id = bfs.node_id
-WHERE  bfs.depth > 0
-GROUP  BY s.name
-ORDER  BY min_hops, s.name
-LIMIT  500;
+SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
+FROM bfs
+JOIN subreddits s ON s.id = bfs.node_id
+WHERE bfs.depth > 0
+GROUP BY s.name
+ORDER BY min_hops, s.name
+LIMIT 500;
