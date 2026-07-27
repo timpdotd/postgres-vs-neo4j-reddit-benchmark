@@ -1,36 +1,33 @@
 #!/usr/bin/env python3
 """
-run_benchmarks.py — PostgreSQL vs Neo4j benchmark runner.
+run_benchmarks.py — PostgreSQL vs Neo4j multi-metric benchmark runner.
 
-Executes 10 analytical queries of increasing complexity on both databases.
-
-Timing methodology:
-  PostgreSQL  — server-side EXPLAIN (ANALYZE, FORMAT JSON) "Execution Time" (ms).
-                Excludes Python driver overhead and network transfer.
-  Neo4j       — driver-reported result.consume().result_consumed_after (ms).
-                Measured from when the query was sent to when all results were
-                consumed; includes network transfer from Docker to localhost.
-                Both metrics exclude Python-side computation but are not
-                directly comparable. Differences are documented in the output.
-
-Cold vs warm cache:
-  Run 0       — "cold" run: plain execution, no EXPLAIN, wall-clock timed.
-                Represents first-access performance (partially warm OS disk cache,
-                partially cold DB buffer cache).
-  Runs 1–N    — "warm" timed runs via server-side timing (EXPLAIN ANALYZE / driver).
-  The median of runs 1–N is the headline benchmark figure.
+Metrics captured per query per database:
+  PostgreSQL (via EXPLAIN ANALYZE BUFFERS FORMAT JSON):
+    - planning_ms       : query planner time (server-side)
+    - execution_ms      : query executor time (server-side, excludes planning)
+    - buffer_hits       : pages served from shared_buffers (cache hit)
+    - buffer_reads      : pages read from disk (cache miss)
+    - buffer_hit_ratio  : hits / (hits + reads)  → cache effectiveness
+    - temp_blocks       : blocks spilled to temp disk (memory pressure indicator)
+    - actual_rows       : rows produced by the top plan node
+  Neo4j:
+    - available_ms      : server time until first result available (driver-reported)
+    - consumed_ms       : server+transfer time until all results consumed
+    - db_hits           : total record-store accesses (via one-off PROFILE run)
+  Both:
+    - cold_ms           : first-access wall-clock time (cold-ish cache)
+    - result_count      : number of rows returned
+    - timing variability: stdev and coefficient of variation over warm runs
 
 Usage:
     python scripts/run_benchmarks.py [--runs N] [--output PATH] [--pg-only] [--neo4j-only]
-
-Environment overrides:
-    PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASS
-    NEO4J_URI, NEO4J_USER, NEO4J_PASS
 """
 
 import argparse
 import json
 import logging
+import math
 import os
 import time
 from pathlib import Path
@@ -38,7 +35,6 @@ from statistics import median, mean, stdev
 from typing import Any
 
 import psycopg2
-import psycopg2.extras
 from neo4j import GraphDatabase
 
 # ---------------------------------------------------------------------------
@@ -73,22 +69,10 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Query registry
 # ---------------------------------------------------------------------------
-# Each entry contains:
-#   id          — short identifier (T1-B … T5-B)
-#   name        — human-readable description
-#   tier        — 1–5 difficulty tier
-#   pg_sql      — parameterized SQL (psycopg2 %(name)s style)
-#   pg_params   — lambda(seeds) → dict of SQL parameters (or None)
-#   neo_cypher  — Cypher query string ($name style)
-#   neo_params  — lambda(seeds) → dict of Cypher parameters (or None)
-# ---------------------------------------------------------------------------
 
 QUERIES: list[dict[str, Any]] = [
-    # ── Tier 1 ──────────────────────────────────────────────────────────────
     {
-        "id":   "T1-B",
-        "name": "All outgoing links from seed subreddit",
-        "tier": 1,
+        "id": "T1-B", "name": "All outgoing links from seed", "tier": 1,
         "pg_sql": """
             SELECT s_tgt.name, h.post_id, h.timestamp, h.source_type, h.post_label
             FROM hyperlinks h
@@ -100,16 +84,13 @@ QUERIES: list[dict[str, Any]] = [
         "pg_params":  lambda s: {"seed": s["seed"]},
         "neo_cypher": """
             MATCH (src:Subreddit {name: $seed})-[h:HYPERLINKS_TO]->(tgt:Subreddit)
-            RETURN tgt.name AS target_subreddit,
-                   h.post_id, h.timestamp, h.source_type, h.post_label
+            RETURN tgt.name AS target, h.post_id, h.timestamp, h.source_type, h.post_label
             ORDER BY h.timestamp DESC
         """,
         "neo_params": lambda s: {"seed": s["seed"]},
     },
     {
-        "id":   "T1-C",
-        "name": "Hostile links only from seed subreddit",
-        "tier": 1,
+        "id": "T1-C", "name": "Hostile links only from seed", "tier": 1,
         "pg_sql": """
             SELECT s_tgt.name, h.post_id, h.timestamp, h.source_type
             FROM hyperlinks h
@@ -121,24 +102,17 @@ QUERIES: list[dict[str, Any]] = [
         "pg_params":  lambda s: {"seed": s["seed"]},
         "neo_cypher": """
             MATCH (src:Subreddit {name: $seed})-[h:HYPERLINKS_TO {post_label: -1}]->(tgt:Subreddit)
-            RETURN tgt.name AS target_subreddit,
-                   h.post_id, h.timestamp, h.source_type
+            RETURN tgt.name AS target, h.post_id, h.timestamp, h.source_type
             ORDER BY h.timestamp DESC
         """,
         "neo_params": lambda s: {"seed": s["seed"]},
     },
-    # ── Tier 2 ──────────────────────────────────────────────────────────────
     {
-        "id":   "T2-A",
-        "name": "Global in-degree ranking (top-20 most-linked-to subreddits)",
-        "tier": 2,
+        "id": "T2-A", "name": "Global in-degree ranking (top 20)", "tier": 2,
         "pg_sql": """
             SELECT s.name AS subreddit, COUNT(*) AS in_degree
-            FROM hyperlinks h
-            JOIN subreddits s ON s.id = h.target_subreddit_id
-            GROUP BY s.name
-            ORDER BY in_degree DESC
-            LIMIT 20
+            FROM hyperlinks h JOIN subreddits s ON s.id = h.target_subreddit_id
+            GROUP BY s.name ORDER BY in_degree DESC LIMIT 20
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
@@ -149,17 +123,12 @@ QUERIES: list[dict[str, Any]] = [
         "neo_params": lambda s: None,
     },
     {
-        "id":   "T2-B",
-        "name": "Top-20 subreddits by hostile outgoing link count",
-        "tier": 2,
+        "id": "T2-B", "name": "Top-20 subreddits by hostile link count", "tier": 2,
         "pg_sql": """
             SELECT s.name AS subreddit, COUNT(*) AS hostile_count
-            FROM hyperlinks h
-            JOIN subreddits s ON s.id = h.source_subreddit_id
+            FROM hyperlinks h JOIN subreddits s ON s.id = h.source_subreddit_id
             WHERE h.post_label = -1
-            GROUP BY s.name
-            ORDER BY hostile_count DESC
-            LIMIT 20
+            GROUP BY s.name ORDER BY hostile_count DESC LIMIT 20
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
@@ -169,11 +138,8 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "neo_params": lambda s: None,
     },
-    # ── Tier 3 ──────────────────────────────────────────────────────────────
     {
-        "id":   "T3-A",
-        "name": "2-hop common targets of seed_a and seed_b",
-        "tier": 3,
+        "id": "T3-A", "name": "2-hop common targets of seed_a and seed_b", "tier": 3,
         "pg_sql": """
             WITH targets_a AS (
                 SELECT DISTINCT h.target_subreddit_id
@@ -186,8 +152,7 @@ QUERIES: list[dict[str, Any]] = [
                 WHERE s.name = %(seed_b)s
             )
             SELECT s.name AS shared_target
-            FROM targets_a a
-            JOIN targets_b b USING (target_subreddit_id)
+            FROM targets_a a JOIN targets_b b USING (target_subreddit_id)
             JOIN subreddits s ON s.id = a.target_subreddit_id
             ORDER BY s.name LIMIT 25
         """,
@@ -196,15 +161,12 @@ QUERIES: list[dict[str, Any]] = [
             MATCH (a:Subreddit {name: $seed_a})-[:HYPERLINKS_TO]->(shared:Subreddit)
             WITH shared
             MATCH (b:Subreddit {name: $seed_b})-[:HYPERLINKS_TO]->(shared)
-            RETURN shared.name AS shared_target
-            ORDER BY shared_target LIMIT 25
+            RETURN shared.name AS shared_target ORDER BY shared_target LIMIT 25
         """,
         "neo_params": lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
     },
     {
-        "id":   "T3-C",
-        "name": "Common hostile attackers of both seed_a and seed_b",
-        "tier": 3,
+        "id": "T3-C", "name": "Common hostile attackers of seed_a and seed_b", "tier": 3,
         "pg_sql": """
             WITH attackers_a AS (
                 SELECT DISTINCT h.source_subreddit_id
@@ -217,8 +179,7 @@ QUERIES: list[dict[str, Any]] = [
                 WHERE s.name = %(seed_b)s AND h.post_label = -1
             )
             SELECT s.name AS common_attacker
-            FROM attackers_a a
-            JOIN attackers_b b USING (source_subreddit_id)
+            FROM attackers_a a JOIN attackers_b b USING (source_subreddit_id)
             JOIN subreddits s ON s.id = a.source_subreddit_id
             ORDER BY s.name LIMIT 25
         """,
@@ -227,16 +188,12 @@ QUERIES: list[dict[str, Any]] = [
             MATCH (atk:Subreddit)-[:HYPERLINKS_TO {post_label: -1}]->(a:Subreddit {name: $seed_a})
             WITH atk
             MATCH (atk)-[:HYPERLINKS_TO {post_label: -1}]->(b:Subreddit {name: $seed_b})
-            RETURN atk.name AS common_attacker
-            ORDER BY atk.name LIMIT 25
+            RETURN atk.name AS common_attacker ORDER BY atk.name LIMIT 25
         """,
         "neo_params": lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
     },
-    # ── Tier 4 ──────────────────────────────────────────────────────────────
     {
-        "id":   "T4-A",
-        "name": "Mutual hostile pairs (global)",
-        "tier": 4,
+        "id": "T4-A", "name": "Global mutual hostile pairs", "tier": 4,
         "pg_sql": """
             SELECT s_a.name AS sub_a, s_b.name AS sub_b, COUNT(*) AS mutual_hostile_links
             FROM hyperlinks ab
@@ -246,11 +203,8 @@ QUERIES: list[dict[str, Any]] = [
                 AND ba.post_label = -1
             JOIN subreddits s_a ON s_a.id = ab.source_subreddit_id
             JOIN subreddits s_b ON s_b.id = ab.target_subreddit_id
-            WHERE ab.post_label = -1
-              AND ab.source_subreddit_id < ab.target_subreddit_id
-            GROUP BY s_a.name, s_b.name
-            ORDER BY mutual_hostile_links DESC
-            LIMIT 20
+            WHERE ab.post_label = -1 AND ab.source_subreddit_id < ab.target_subreddit_id
+            GROUP BY s_a.name, s_b.name ORDER BY mutual_hostile_links DESC LIMIT 20
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
@@ -263,21 +217,16 @@ QUERIES: list[dict[str, Any]] = [
         "neo_params": lambda s: None,
     },
     {
-        "id":   "T4-B",
-        "name": "Bounded BFS depth 3 from seed_bfs",
-        "tier": 4,
+        "id": "T4-B", "name": "Bounded BFS depth 3 from seed_bfs", "tier": 4,
         "pg_sql": """
             WITH RECURSIVE bfs(node_id, depth, path) AS (
-                SELECT s.id, 0, ARRAY[s.id]
-                FROM subreddits s WHERE s.name = %(seed_bfs)s
+                SELECT s.id, 0, ARRAY[s.id] FROM subreddits s WHERE s.name = %(seed_bfs)s
                 UNION ALL
                 SELECT h.target_subreddit_id, b.depth + 1, b.path || h.target_subreddit_id
-                FROM bfs b
-                JOIN hyperlinks h ON h.source_subreddit_id = b.node_id
-                WHERE b.depth < 3
-                  AND NOT (h.target_subreddit_id = ANY(b.path))
+                FROM bfs b JOIN hyperlinks h ON h.source_subreddit_id = b.node_id
+                WHERE b.depth < 3 AND NOT (h.target_subreddit_id = ANY(b.path))
             )
-            SELECT s.name AS reachable_subreddit, MIN(bfs.depth) AS min_hops
+            SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
             FROM bfs JOIN subreddits s ON s.id = bfs.node_id
             WHERE bfs.depth > 0
             GROUP BY s.name ORDER BY min_hops, s.name LIMIT 500
@@ -287,31 +236,23 @@ QUERIES: list[dict[str, Any]] = [
             MATCH p = (src:Subreddit {name: $seed_bfs})-[:HYPERLINKS_TO*1..3]->(tgt:Subreddit)
             WHERE src <> tgt
             WITH tgt, min(length(p)) AS min_hops
-            RETURN tgt.name AS reachable_subreddit, min_hops
-            ORDER BY min_hops, tgt.name LIMIT 500
+            RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
         """,
         "neo_params": lambda s: {"seed_bfs": s["seed_bfs"]},
     },
-    # ── Tier 5 ──────────────────────────────────────────────────────────────
     {
-        "id":   "T5-A",
-        "name": "3-node hostile-sentiment cycles seeded from seed",
-        "tier": 5,
+        "id": "T5-A", "name": "3-node hostile cycles seeded", "tier": 5,
         "pg_sql": """
             SELECT s_a.name AS node_a, s_b.name AS node_b, s_c.name AS node_c
             FROM hyperlinks ab
-            JOIN hyperlinks bc
-                ON  bc.source_subreddit_id = ab.target_subreddit_id
-                AND bc.post_label = -1
+            JOIN hyperlinks bc ON bc.source_subreddit_id = ab.target_subreddit_id AND bc.post_label = -1
             JOIN hyperlinks ca
-                ON  ca.source_subreddit_id = bc.target_subreddit_id
-                AND ca.target_subreddit_id = ab.source_subreddit_id
-                AND ca.post_label = -1
+                ON ca.source_subreddit_id = bc.target_subreddit_id
+                AND ca.target_subreddit_id = ab.source_subreddit_id AND ca.post_label = -1
             JOIN subreddits s_a ON s_a.id = ab.source_subreddit_id
             JOIN subreddits s_b ON s_b.id = ab.target_subreddit_id
             JOIN subreddits s_c ON s_c.id = bc.target_subreddit_id
-            WHERE ab.post_label = -1
-              AND s_a.name = %(seed)s
+            WHERE ab.post_label = -1 AND s_a.name = %(seed)s
               AND ab.target_subreddit_id < bc.target_subreddit_id
             LIMIT 50
         """,
@@ -322,27 +263,21 @@ QUERIES: list[dict[str, Any]] = [
                   -[:HYPERLINKS_TO {post_label: -1}]->(c:Subreddit)
                   -[:HYPERLINKS_TO {post_label: -1}]->(a)
             WHERE id(b) < id(c)
-            RETURN a.name AS node_a, b.name AS node_b, c.name AS node_c
-            LIMIT 50
+            RETURN a.name AS node_a, b.name AS node_b, c.name AS node_c LIMIT 50
         """,
         "neo_params": lambda s: {"seed": s["seed"]},
     },
     {
-        "id":   "T5-B",
-        "name": "Bounded BFS depth 4 from seed_bfs",
-        "tier": 5,
+        "id": "T5-B", "name": "Bounded BFS depth 4 from seed_bfs", "tier": 5,
         "pg_sql": """
             WITH RECURSIVE bfs(node_id, depth, path) AS (
-                SELECT s.id, 0, ARRAY[s.id]
-                FROM subreddits s WHERE s.name = %(seed_bfs)s
+                SELECT s.id, 0, ARRAY[s.id] FROM subreddits s WHERE s.name = %(seed_bfs)s
                 UNION ALL
                 SELECT h.target_subreddit_id, b.depth + 1, b.path || h.target_subreddit_id
-                FROM bfs b
-                JOIN hyperlinks h ON h.source_subreddit_id = b.node_id
-                WHERE b.depth < 4
-                  AND NOT (h.target_subreddit_id = ANY(b.path))
+                FROM bfs b JOIN hyperlinks h ON h.source_subreddit_id = b.node_id
+                WHERE b.depth < 4 AND NOT (h.target_subreddit_id = ANY(b.path))
             )
-            SELECT s.name AS reachable_subreddit, MIN(bfs.depth) AS min_hops
+            SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
             FROM bfs JOIN subreddits s ON s.id = bfs.node_id
             WHERE bfs.depth > 0
             GROUP BY s.name ORDER BY min_hops, s.name LIMIT 500
@@ -352,8 +287,7 @@ QUERIES: list[dict[str, Any]] = [
             MATCH p = (src:Subreddit {name: $seed_bfs})-[:HYPERLINKS_TO*1..4]->(tgt:Subreddit)
             WHERE src <> tgt
             WITH tgt, min(length(p)) AS min_hops
-            RETURN tgt.name AS reachable_subreddit, min_hops
-            ORDER BY min_hops, tgt.name LIMIT 500
+            RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
         """,
         "neo_params": lambda s: {"seed_bfs": s["seed_bfs"]},
     },
@@ -365,30 +299,15 @@ QUERIES: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 def pick_seeds(conn) -> dict[str, str]:
-    """
-    Auto-select benchmark seeds from the loaded dataset.
-
-    seed      (T1-B, T1-C, T5-A) — top hostile sender: a community with rich
-              hostile outgoing links, interesting for cycle detection.
-    seed_a/b  (T3-A, T3-C)       — top-2 by total out-degree: popular enough
-              to share many common targets and attackers.
-    seed_bfs  (T4-B, T5-B)       — ~rank 200 by out-degree: medium-low degree
-              to keep BFS expansion tractable at depth 3 and 4.
-    """
     with conn.cursor() as cur:
-        # Top subreddits by total out-degree
         cur.execute("""
             SELECT s.name, COUNT(*) AS c
-            FROM hyperlinks h
-            JOIN subreddits s ON s.id = h.source_subreddit_id
+            FROM hyperlinks h JOIN subreddits s ON s.id = h.source_subreddit_id
             GROUP BY s.name ORDER BY c DESC LIMIT 210
         """)
-        by_outdeg = cur.fetchall()  # list of (name, count)
-
-        # Top subreddit by hostile out-degree (for T1-C and T5-A)
+        by_outdeg = cur.fetchall()
         cur.execute("""
-            SELECT s.name
-            FROM hyperlinks h
+            SELECT s.name FROM hyperlinks h
             JOIN subreddits s ON s.id = h.source_subreddit_id
             WHERE h.post_label = -1
             GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 1
@@ -399,192 +318,261 @@ def pick_seeds(conn) -> dict[str, str]:
         "seed":     top_hostile,
         "seed_a":   by_outdeg[0][0],
         "seed_b":   by_outdeg[1][0],
-        "seed_bfs": by_outdeg[199][0],   # rank-200 (0-indexed: 199)
+        "seed_bfs": by_outdeg[199][0],
     }
-
-    log.info("Seeds selected:")
-    log.info("  seed (top hostile sender)  : %s", seeds["seed"])
-    log.info("  seed_a (rank-1 out-degree) : %s (out-deg %d)", seeds["seed_a"], by_outdeg[0][1])
-    log.info("  seed_b (rank-2 out-degree) : %s (out-deg %d)", seeds["seed_b"], by_outdeg[1][1])
-    log.info("  seed_bfs (rank-200)        : %s (out-deg %d)", seeds["seed_bfs"], by_outdeg[199][1])
+    log.info("Seeds:  seed=%s  seed_a=%s (deg %d)  seed_b=%s (deg %d)  seed_bfs=%s (deg %d)",
+             seeds["seed"],
+             seeds["seed_a"], by_outdeg[0][1],
+             seeds["seed_b"], by_outdeg[1][1],
+             seeds["seed_bfs"], by_outdeg[199][1])
     return seeds
 
 
 # ---------------------------------------------------------------------------
-# PostgreSQL timing helpers
+# PostgreSQL helpers
 # ---------------------------------------------------------------------------
 
-def _pg_cold_run(conn, sql: str, params: dict | None) -> tuple[float, int]:
-    """
-    Execute the query once without EXPLAIN ANALYZE.
-    Returns (wall_clock_ms, row_count).
-    Used for the cold-cache run — measures raw client-observed latency.
-    """
+def _sum_buffer_nodes(node: dict) -> tuple[int, int, int]:
+    """Recursively sum (shared_hits, shared_reads, temp_blocks) across plan tree."""
+    hit  = node.get("Shared Hit Blocks",     0)
+    read = node.get("Shared Read Blocks",    0)
+    tmp  = node.get("Temp Written Blocks",   0) + node.get("Temp Read Blocks", 0)
+    for child in node.get("Plans", []):
+        ch, cr, ct = _sum_buffer_nodes(child)
+        hit += ch; read += cr; tmp += ct
+    return hit, read, tmp
+
+
+def _pg_cold_run(conn, sql: str, params) -> tuple[float, int]:
     with conn.cursor() as cur:
         t0 = time.perf_counter()
         cur.execute(sql, params)
         rows = cur.fetchall()
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    return elapsed_ms, len(rows)
+    return (time.perf_counter() - t0) * 1000.0, len(rows)
 
 
-def _pg_timed_run(conn, sql: str, params: dict | None) -> tuple[float, int]:
-    """
-    Execute the query via EXPLAIN (ANALYZE, FORMAT JSON) and extract the
-    server-reported Execution Time. Returns (exec_ms, actual_rows_approx).
-    EXPLAIN ANALYZE runs the query internally — results are not returned to
-    the client, but all rows are produced on the server side.
-    """
-    explain_sql = "EXPLAIN (ANALYZE, FORMAT JSON) " + sql
+def _pg_timed_run(conn, sql: str, params) -> dict:
+    """EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) — returns full metric dict."""
     with conn.cursor() as cur:
-        cur.execute(explain_sql, params)
+        cur.execute("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, params)
         raw = cur.fetchone()[0]
-        # psycopg2 returns JSON as a Python list; older versions return a string
-        plan = raw if isinstance(raw, list) else __import__("json").loads(raw)
-        exec_ms = plan[0]["Execution Time"]
-        actual_rows = plan[0]["Plan"].get("Actual Rows", -1)
-    return exec_ms, actual_rows
+        plan = raw if isinstance(raw, list) else json.loads(raw)
+    top  = plan[0]
+    hits, reads, tmp = _sum_buffer_nodes(top["Plan"])
+    return {
+        "execution_ms":  top["Execution Time"],
+        "planning_ms":   top["Planning Time"],
+        "buffer_hits":   hits,
+        "buffer_reads":  reads,
+        "temp_blocks":   tmp,
+        "actual_rows":   top["Plan"].get("Actual Rows", -1),
+    }
 
 
 def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
-    """Run one query on PostgreSQL: 1 cold + n_runs warm server-timed runs."""
-    q_id   = query["id"]
-    sql    = query["pg_sql"]
+    sql    = query["pg_sql"].strip()
     params = query["pg_params"](seeds)
+    q_id   = query["id"]
 
-    log.info("  [PG] %s — cold run...", q_id)
+    log.info("  [PG] %s cold run...", q_id)
     try:
         cold_ms, cold_rows = _pg_cold_run(conn, sql, params)
-        log.info("    cold: %.1f ms  (%d rows)", cold_ms, cold_rows)
     except Exception as exc:
-        log.error("    cold run FAILED: %s", exc)
-        conn.rollback()
-        return _error_result(q_id, query["name"], query["tier"], "postgresql", n_runs, str(exc))
+        log.error("  [PG] %s cold FAILED: %s", q_id, exc); conn.rollback()
+        return _err(query, "postgresql", n_runs, str(exc))
+    log.info("    cold=%.1f ms  rows=%d", cold_ms, cold_rows)
 
-    warm_times: list[float] = []
+    exec_ms_list, plan_ms_list, hits_list, reads_list, tmp_list = [], [], [], [], []
+    result_count = cold_rows
+
     for i in range(1, n_runs + 1):
         try:
-            ms, rows = _pg_timed_run(conn, sql, params)
-            warm_times.append(ms)
-            log.info("    warm %d/%d: %.1f ms", i, n_runs, ms)
+            m = _pg_timed_run(conn, sql, params)
+            exec_ms_list.append(m["execution_ms"])
+            plan_ms_list.append(m["planning_ms"])
+            hits_list.append(m["buffer_hits"])
+            reads_list.append(m["buffer_reads"])
+            tmp_list.append(m["temp_blocks"])
+            if i == 1 and m["actual_rows"] >= 0:
+                result_count = m["actual_rows"]
+            log.info("    warm %d/%d: exec=%.1f ms  plan=%.2f ms  hits=%d  reads=%d",
+                     i, n_runs, m["execution_ms"], m["planning_ms"],
+                     m["buffer_hits"], m["buffer_reads"])
         except Exception as exc:
-            log.error("    warm run %d FAILED: %s", i, exc)
-            conn.rollback()
-            warm_times.append(float("nan"))
+            log.error("    warm %d FAILED: %s", i, exc); conn.rollback()
+            exec_ms_list.append(float("nan"))
 
-    valid = [t for t in warm_times if not __import__("math").isnan(t)]
+    valid = [t for t in exec_ms_list if not math.isnan(t)]
+    total_hits  = sum(hits_list)
+    total_reads = sum(reads_list)
+    hit_ratio   = total_hits / (total_hits + total_reads) if (total_hits + total_reads) > 0 else 1.0
+    med_exec    = median(valid) if valid else None
+    cv          = (stdev(valid) / mean(valid) * 100) if len(valid) > 1 and mean(valid) > 0 else 0.0
+
     return {
-        "query_id":     q_id,
-        "query_name":   query["name"],
-        "tier":         query["tier"],
-        "db":           "postgresql",
-        "timing_method":"EXPLAIN ANALYZE Execution Time (server-side ms)",
-        "seeds_used":   params or {},
-        "cold_ms":      cold_ms,
-        "cold_rows":    cold_rows,
-        "warm_runs":    n_runs,
-        "warm_times_ms": warm_times,
-        "median_ms":    median(valid) if valid else None,
-        "mean_ms":      mean(valid) if valid else None,
-        "stdev_ms":     stdev(valid) if len(valid) > 1 else 0.0,
-        "min_ms":       min(valid) if valid else None,
-        "max_ms":       max(valid) if valid else None,
+        "query_id":            q_id,
+        "query_name":          query["name"],
+        "tier":                query["tier"],
+        "db":                  "postgresql",
+        "timing_method":       "EXPLAIN ANALYZE Execution Time (server-side ms, excludes network)",
+        "seeds_used":          params or {},
+        # Cold cache
+        "cold_ms":             cold_ms,
+        "cold_rows":           cold_rows,
+        # Result info
+        "result_count":        result_count,
+        # Warm timing (per-run lists for box plots)
+        "warm_runs":           n_runs,
+        "warm_execution_ms":   exec_ms_list,
+        "warm_planning_ms":    plan_ms_list,
+        # Warm timing aggregates
+        "median_execution_ms": med_exec,
+        "mean_execution_ms":   mean(valid) if valid else None,
+        "stdev_execution_ms":  stdev(valid) if len(valid) > 1 else 0.0,
+        "min_execution_ms":    min(valid) if valid else None,
+        "max_execution_ms":    max(valid) if valid else None,
+        "cv_pct":              cv,                          # coefficient of variation
+        "cold_warm_delta_ms":  cold_ms - med_exec if med_exec else None,
+        # Planning
+        "median_planning_ms":  median(plan_ms_list) if plan_ms_list else None,
+        "warm_buffer_hits":    hits_list,
+        "warm_buffer_reads":   reads_list,
+        "warm_temp_blocks":    tmp_list,
+        # Buffer aggregates
+        "total_buffer_hits":   total_hits,
+        "total_buffer_reads":  total_reads,
+        "buffer_hit_ratio":    round(hit_ratio, 4),
+        "avg_temp_blocks":     mean(tmp_list) if tmp_list else 0,
     }
 
 
 # ---------------------------------------------------------------------------
-# Neo4j timing helpers
+# Neo4j helpers
 # ---------------------------------------------------------------------------
 
-def _neo4j_cold_run(driver, cypher: str, params: dict | None) -> tuple[float, int]:
-    """
-    Execute once and return (wall_clock_ms, row_count).
-    Used for cold-cache run — wall-clock timed on the Python side.
-    """
+def _neo4j_cold_run(driver, cypher: str, params) -> tuple[float, int]:
     with driver.session() as session:
         t0 = time.perf_counter()
         result = session.run(cypher, **(params or {}))
         rows = result.data()
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    return elapsed_ms, len(rows)
+    return (time.perf_counter() - t0) * 1000.0, len(rows)
 
 
-def _neo4j_timed_run(driver, cypher: str, params: dict | None) -> tuple[float, int]:
-    """
-    Execute and return (result_consumed_after_ms, row_count).
-    result_consumed_after is reported by the Neo4j driver in ms — measured
-    from when the query was dispatched to when all results were consumed.
-    Includes server execution + network transfer to localhost.
-    """
+def _neo4j_timed_run(driver, cypher: str, params) -> dict:
     with driver.session() as session:
         result = session.run(cypher, **(params or {}))
-        rows = result.data()
-        summary = result.consume()
-        server_ms = float(summary.result_consumed_after)
-    return server_ms, len(rows)
+        rows   = result.data()
+        summ   = result.consume()
+    return {
+        "consumed_ms":  float(summ.result_consumed_after),
+        "available_ms": float(summ.result_available_after),
+        "row_count":    len(rows),
+    }
+
+
+def _neo4j_profile_once(driver, cypher: str, params) -> int:
+    """One-off PROFILE run to collect db_hits. NOT used for timing."""
+    def _sum_hits(node) -> int:
+        total = getattr(node, "db_hits", 0) or 0
+        for child in getattr(node, "children", []):
+            total += _sum_hits(child)
+        return total
+    try:
+        with driver.session() as session:
+            result = session.run("PROFILE " + cypher, **(params or {}))
+            result.data()
+            summ = result.consume()
+            return _sum_hits(summ.profile) if summ.profile else -1
+    except Exception as exc:
+        log.warning("PROFILE run failed (non-fatal): %s", exc)
+        return -1
 
 
 def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
-    """Run one query on Neo4j: 1 cold + n_runs warm driver-timed runs."""
-    q_id   = query["id"]
-    cypher = query["neo_cypher"]
+    cypher = query["neo_cypher"].strip()
     params = query["neo_params"](seeds)
+    q_id   = query["id"]
 
-    log.info("  [Neo4j] %s — cold run...", q_id)
+    log.info("  [Neo4j] %s cold run...", q_id)
     try:
         cold_ms, cold_rows = _neo4j_cold_run(driver, cypher, params)
-        log.info("    cold: %.1f ms  (%d rows)", cold_ms, cold_rows)
     except Exception as exc:
-        log.error("    cold run FAILED: %s", exc)
-        return _error_result(q_id, query["name"], query["tier"], "neo4j", n_runs, str(exc))
+        log.error("  [Neo4j] %s cold FAILED: %s", q_id, exc)
+        return _err(query, "neo4j", n_runs, str(exc))
+    log.info("    cold=%.1f ms  rows=%d", cold_ms, cold_rows)
 
-    warm_times: list[float] = []
+    log.info("    profiling for db_hits (not timed)...")
+    db_hits = _neo4j_profile_once(driver, cypher, params)
+    log.info("    db_hits=%d", db_hits)
+
+    consumed_list, available_list = [], []
+    result_count = cold_rows
+
     for i in range(1, n_runs + 1):
         try:
-            ms, rows = _neo4j_timed_run(driver, cypher, params)
-            warm_times.append(ms)
-            log.info("    warm %d/%d: %.1f ms", i, n_runs, ms)
+            m = _neo4j_timed_run(driver, cypher, params)
+            consumed_list.append(m["consumed_ms"])
+            available_list.append(m["available_ms"])
+            if i == 1:
+                result_count = m["row_count"]
+            log.info("    warm %d/%d: consumed=%.1f ms  available=%.1f ms",
+                     i, n_runs, m["consumed_ms"], m["available_ms"])
         except Exception as exc:
-            log.error("    warm run %d FAILED: %s", i, exc)
-            warm_times.append(float("nan"))
+            log.error("    warm %d FAILED: %s", i, exc)
+            consumed_list.append(float("nan"))
+            available_list.append(float("nan"))
 
-    valid = [t for t in warm_times if not __import__("math").isnan(t)]
+    valid_c = [t for t in consumed_list  if not math.isnan(t)]
+    valid_a = [t for t in available_list if not math.isnan(t)]
+    med_c   = median(valid_c) if valid_c else None
+    cv      = (stdev(valid_c) / mean(valid_c) * 100) if len(valid_c) > 1 and mean(valid_c) > 0 else 0.0
+
     return {
-        "query_id":     q_id,
-        "query_name":   query["name"],
-        "tier":         query["tier"],
-        "db":           "neo4j",
-        "timing_method":"result_consumed_after (driver-reported ms, includes transfer)",
-        "seeds_used":   params or {},
-        "cold_ms":      cold_ms,
-        "cold_rows":    cold_rows,
-        "warm_runs":    n_runs,
-        "warm_times_ms": warm_times,
-        "median_ms":    median(valid) if valid else None,
-        "mean_ms":      mean(valid) if valid else None,
-        "stdev_ms":     stdev(valid) if len(valid) > 1 else 0.0,
-        "min_ms":       min(valid) if valid else None,
-        "max_ms":       max(valid) if valid else None,
+        "query_id":             q_id,
+        "query_name":           query["name"],
+        "tier":                 query["tier"],
+        "db":                   "neo4j",
+        "timing_method":        "result_consumed_after (driver ms, server+network transfer)",
+        "seeds_used":           params or {},
+        # Cold cache
+        "cold_ms":              cold_ms,
+        "cold_rows":            cold_rows,
+        # Result info
+        "result_count":         result_count,
+        "db_hits":              db_hits,
+        # Warm timing (per-run lists for box plots)
+        "warm_runs":            n_runs,
+        "warm_consumed_ms":     consumed_list,
+        "warm_available_ms":    available_list,
+        # Primary timing (consumed = headline metric for consistency with pg execution_ms)
+        "warm_execution_ms":    consumed_list,          # alias used by notebook
+        "median_execution_ms":  med_c,
+        "median_consumed_ms":   med_c,
+        "median_available_ms":  median(valid_a) if valid_a else None,
+        "mean_execution_ms":    mean(valid_c) if valid_c else None,
+        "stdev_execution_ms":   stdev(valid_c) if len(valid_c) > 1 else 0.0,
+        "min_execution_ms":     min(valid_c) if valid_c else None,
+        "max_execution_ms":     max(valid_c) if valid_c else None,
+        "cv_pct":               cv,
+        "cold_warm_delta_ms":   cold_ms - med_c if med_c else None,
+        # Neo4j specific
+        "transfer_overhead_ms": (median(valid_c) - median(valid_a))
+                                if (valid_c and valid_a) else None,
     }
 
 
 # ---------------------------------------------------------------------------
-# Error placeholder
+# Utilities
 # ---------------------------------------------------------------------------
 
-def _error_result(qid: str, name: str, tier: int, db: str,
-                  n_runs: int, error: str) -> dict:
+def _err(query: dict, db: str, n_runs: int, msg: str) -> dict:
     return {
-        "query_id": qid, "query_name": name, "tier": tier, "db": db,
-        "error": error, "warm_runs": n_runs,
-        "warm_times_ms": [], "median_ms": None, "mean_ms": None,
-        "cold_ms": None, "cold_rows": 0,
+        "query_id": query["id"], "query_name": query["name"],
+        "tier": query["tier"], "db": db, "error": msg,
+        "warm_runs": n_runs, "warm_execution_ms": [],
+        "median_execution_ms": None, "cold_ms": None, "cold_rows": 0,
     }
 
-
-# ---------------------------------------------------------------------------
-# Output
-# ---------------------------------------------------------------------------
 
 def save_results(results: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -594,36 +582,47 @@ def save_results(results: list[dict], path: Path) -> None:
 
 
 def print_table(results: list[dict]) -> None:
-    """Print a formatted comparison table (median warm times)."""
-    by_query: dict[str, dict] = {}
+    by_q: dict[str, dict] = {}
     for r in results:
-        by_query.setdefault(r["query_id"], {})[r["db"]] = r
+        by_q.setdefault(r["query_id"], {})[r["db"]] = r
 
-    W = 100
+    W = 108
     print("\n" + "=" * W)
-    print(f"{'ID':<8} {'Tier':<6} {'Description':<42} "
-          f"{'PG median':>10} {'Neo4j med':>10} {'Speedup':>9}")
+    hdr = (f"{'ID':<8} {'Tier':<5} {'Name':<38} "
+           f"{'PG exec':>9} {'PG plan':>8} {'PG buf%':>8} "
+           f"{'Neo4j':>9} {'Neo4j avail':>12} {'Speedup':>8}")
+    print(hdr)
     print("=" * W)
 
-    for qid in sorted(by_query):
-        pg  = by_query[qid].get("postgresql")
-        neo = by_query[qid].get("neo4j")
+    for qid in sorted(by_q):
+        pg  = by_q[qid].get("postgresql", {})
+        neo = by_q[qid].get("neo4j", {})
         rec = pg or neo
-        tier = rec.get("tier", "?")
-        name = rec["query_name"][:41]
-        pg_t  = f"{pg['median_ms']:.1f} ms"  if (pg  and pg.get("median_ms")  is not None) else "err/N/A"
-        neo_t = f"{neo['median_ms']:.1f} ms" if (neo and neo.get("median_ms") is not None) else "err/N/A"
-        if pg and neo and pg.get("median_ms") and neo.get("median_ms"):
-            ratio = pg["median_ms"] / neo["median_ms"]
-            winner = f"Neo4j {ratio:.2f}×" if ratio > 1 else f"PG    {1/ratio:.2f}×"
+        t   = f"T{rec.get('tier','?')}"
+        name = rec.get("query_name","")[:37]
+
+        pg_exec = f"{pg['median_execution_ms']:.1f}" if pg.get("median_execution_ms") else "err"
+        pg_plan = f"{pg['median_planning_ms']:.2f}"  if pg.get("median_planning_ms")  else "—"
+        pg_buf  = f"{pg['buffer_hit_ratio']*100:.1f}%" if pg.get("buffer_hit_ratio")  else "—"
+
+        neo_c   = f"{neo['median_consumed_ms']:.1f}"  if neo.get("median_consumed_ms")  else "err"
+        neo_a   = f"{neo['median_available_ms']:.1f}" if neo.get("median_available_ms") else "—"
+
+        if pg.get("median_execution_ms") and neo.get("median_consumed_ms"):
+            ratio = pg["median_execution_ms"] / neo["median_consumed_ms"]
+            winner = f"Neo {ratio:.2f}x" if ratio > 1 else f"PG  {1/ratio:.2f}x"
         else:
             winner = "—"
-        print(f"{qid:<8} {tier:<6} {name:<42} {pg_t:>10} {neo_t:>10} {winner:>9}")
+
+        print(f"{qid:<8} {t:<5} {name:<38} "
+              f"{pg_exec:>9} {pg_plan:>8} {pg_buf:>8} "
+              f"{neo_c:>9} {neo_a:>12} {winner:>8}")
 
     print("=" * W)
-    print("\nNote: PG times = server-side EXPLAIN ANALYZE 'Execution Time'.")
-    print("      Neo4j times = driver result_consumed_after (server+network).")
-    print("      Speedup > 1.0× = Neo4j is faster for that query.\n")
+    print("\nPG exec = EXPLAIN ANALYZE Execution Time (server-only, ms)")
+    print("PG plan = Planning Time (ms)  |  PG buf% = shared_buffers cache hit rate")
+    print("Neo4j   = result_consumed_after (server+network, ms)")
+    print("Neo4j avail = result_available_after (server-only estimate, ms)\n")
 
 
 # ---------------------------------------------------------------------------
@@ -631,40 +630,39 @@ def print_table(results: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark runner: PostgreSQL vs Neo4j")
-    parser.add_argument("--runs",       type=int,  default=DEFAULT_RUNS,   help=f"Warm runs per query (default: {DEFAULT_RUNS})")
-    parser.add_argument("--output",     type=Path, default=DEFAULT_OUTPUT, help="JSON output path")
-    parser.add_argument("--pg-only",    action="store_true", help="PostgreSQL only")
-    parser.add_argument("--neo4j-only", action="store_true", help="Neo4j only")
+    parser = argparse.ArgumentParser(description="Multi-metric benchmark: PostgreSQL vs Neo4j")
+    parser.add_argument("--runs",        type=int,  default=DEFAULT_RUNS)
+    parser.add_argument("--output",      type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--pg-only",     action="store_true")
+    parser.add_argument("--neo4j-only",  action="store_true")
     args = parser.parse_args()
 
-    # Always read seeds from PostgreSQL (they're the same subreddit names in both DBs)
-    conn = psycopg2.connect(**PG_CONFIG)
-    seeds = pick_seeds(conn)
+    conn   = psycopg2.connect(**PG_CONFIG)
+    seeds  = pick_seeds(conn)
+    conn.close()
 
     all_results: list[dict] = []
 
     if not args.neo4j_only:
-        log.info("=== PostgreSQL Benchmarks (%d queries × %d warm runs) ===", len(QUERIES), args.runs)
-        conn.set_session(autocommit=True)   # prevents idle-in-transaction locking
-        for query in QUERIES:
-            log.info("Running %s: %s", query["id"], query["name"])
-            result = run_pg_query(conn, query, seeds, args.runs)
-            all_results.append(result)
+        log.info("=== PostgreSQL: %d queries × %d warm runs ===", len(QUERIES), args.runs)
+        conn = psycopg2.connect(**PG_CONFIG)
+        conn.set_session(autocommit=True)
+        for q in QUERIES:
+            log.info("Running %s: %s", q["id"], q["name"])
+            all_results.append(run_pg_query(conn, q, seeds, args.runs))
         conn.close()
 
     if not args.pg_only:
-        log.info("=== Neo4j Benchmarks (%d queries × %d warm runs) ===", len(QUERIES), args.runs)
+        log.info("=== Neo4j: %d queries × %d warm runs + 1 PROFILE ===", len(QUERIES), args.runs)
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
-        for query in QUERIES:
-            log.info("Running %s: %s", query["id"], query["name"])
-            result = run_neo4j_query(driver, query, seeds, args.runs)
-            all_results.append(result)
+        for q in QUERIES:
+            log.info("Running %s: %s", q["id"], q["name"])
+            all_results.append(run_neo4j_query(driver, q, seeds, args.runs))
         driver.close()
 
     save_results(all_results, args.output)
     print_table(all_results)
-    log.info("Done. Open notebooks/results_analysis.ipynb for charts.")
+    log.info("Open notebooks/results_analysis.ipynb to generate charts.")
 
 
 if __name__ == "__main__":
