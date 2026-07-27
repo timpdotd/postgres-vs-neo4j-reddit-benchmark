@@ -1,1 +1,78 @@
-# Database container configs
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Service (Relational DBMS Benchmark Target)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: reddit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reddit_user
+      POSTGRES_PASSWORD: reddit_password
+      POSTGRES_DB: reddit_benchmark
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Mount project sql directory and data directory for schema initialization & ETL loading
+      - ../sql:/sql:ro
+      - ../data:/data:ro
+    # Performance tuning for analytical benchmark queries & recursive CTEs
+    shm_size: 1g
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=256MB
+      -c effective_cache_size=1GB
+      -c max_connections=100
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reddit_user -d reddit_benchmark"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Neo4j Service (Graph Database Benchmark Target)
+  # ---------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5-community
+    container_name: reddit-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/reddit_password
+      # Enable APOC plugin for advanced graph algorithms & cycle detection benchmarks
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*
+      # Enable LOAD CSV from import directory for rapid data ingestion
+      NEO4J_dbms_security_allow__csv__import__from__file__urls: "true"
+      # Memory allocation tuned for ~60k nodes and ~860k edges + analytical path finding
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
+    ports:
+      - "7474:7474" # HTTP / Neo4j Browser UI
+      - "7687:7687" # Bolt protocol for Python driver & benchmarking
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+      # Mount project data folder to Neo4j import directory for LOAD CSV
+      - ../data:/var/lib/neo4j/import:ro
+      - ../cypher:/cypher:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  postgres_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
