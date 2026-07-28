@@ -1,3 +1,19 @@
 # Tells Git to ignore heavy /data files
 data/
 !data/.keep
+
+# Python virtual environment & cache files
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/

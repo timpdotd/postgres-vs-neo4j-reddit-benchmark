@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "postgres-vs-neo4j-reddit-benchmark"
+version = "1.0.0"
+description = "Comparative benchmark between PostgreSQL (3NF) and Neo4j (Property Graph) on the Reddit Hyperlink Network"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Davide Timperi", email = "timperi.1950722@studenti.uniroma1.it" }
+]
+keywords = ["database", "benchmark", "postgresql", "neo4j", "nosql", "graph-database", "data-management"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "psycopg2-binary>=2.9.9",
+    "neo4j>=5.18.0",
+    "numpy>=1.26.0,<3.0.0",
+    "pandas>=2.2.0",
+    "psutil>=5.9.8",
+    "matplotlib>=3.8.3",
+    "seaborn>=0.13.2",
+    "jupyter>=1.0.0",
+    "notebook>=7.0.8",
+    "ipykernel>=6.29.0",
+]
+
+[project.urls]
+Homepage = "https://snap.stanford.edu/data/soc-RedditHyperlinks.html"
+Repository = "https://github.com/timpdotd/postgres-vs-neo4j-reddit-benchmark"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts*"]

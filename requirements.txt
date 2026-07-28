@@ -1,0 +1,26 @@
+# =============================================================================
+# PostgreSQL vs. Neo4j Benchmark — Dependency Requirements
+# Course: Data Management (2025/2026) | Author: Davide Timperi (1950722)
+# Compatible with standard pip, virtualenv, and modern package managers (uv).
+#
+# Usage:
+#   pip install -r requirements.txt
+#   # OR with uv:
+#   uv pip install -r requirements.txt
+# =============================================================================
+
+# Database Drivers & Connection Connectors
+psycopg2-binary>=2.9.9         # High-performance PostgreSQL C-extension driver
+neo4j>=5.18.0                  # Official Neo4j Bolt protocol driver
+
+# Data Manipulation & Numerical Computing
+numpy>=1.26.0,<3.0.0           # Array manipulations and statistical operations
+pandas>=2.2.0                  # Dataframe manipulation and results tabular formatting
+psutil>=5.9.8                  # Client-side system CPU & memory resource monitoring
+
+# Visualization & Notebook Reporting
+matplotlib>=3.8.3              # Plotting engine for performance charts
+seaborn>=0.13.2                # Statistical data visualization (Catppuccin styling)
+jupyter>=1.0.0                 # Jupyter Notebook environment for interactive analysis
+notebook>=7.0.8                # Classic/modern notebook server interface
+ipykernel>=6.29.0              # Python kernel for Jupyter notebooks

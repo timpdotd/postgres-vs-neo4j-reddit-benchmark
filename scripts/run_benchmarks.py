@@ -35,6 +35,7 @@ from statistics import median, mean, stdev
 from typing import Any
 
 import psycopg2
+import psutil
 from neo4j import GraphDatabase
 
 # ---------------------------------------------------------------------------
@@ -409,6 +410,7 @@ def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
     exec_ms_list, plan_ms_list, hits_list, reads_list, tmp_list = [], [], [], [], []
     result_count = cold_rows
 
+    psutil.cpu_percent(interval=None)  # Initialize CPU utilization tracker
     for i in range(1, n_runs + 1):
         try:
             m = _pg_timed_run(conn, sql, params)
@@ -433,6 +435,9 @@ def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
     med_exec    = median(valid) if valid else None
     cv          = (stdev(valid) / mean(valid) * 100) if len(valid) > 1 and mean(valid) > 0 else 0.0
 
+    client_cpu = psutil.cpu_percent(interval=None)
+    mem_stat = psutil.virtual_memory()
+
     return {
         "query_id":            q_id,
         "query_name":          query["name"],
@@ -445,6 +450,10 @@ def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
         "cold_rows":           cold_rows,
         # Result info
         "result_count":        result_count,
+        # Client-side system resource telemetry (via psutil)
+        "client_cpu_pct":      round(client_cpu, 2),
+        "client_ram_pct":      round(mem_stat.percent, 2),
+        "client_ram_used_mb":  round(mem_stat.used / (1024 * 1024), 2),
         # Warm timing (per-run lists for box plots)
         "warm_runs":           n_runs,
         "warm_execution_ms":   exec_ms_list,
@@ -532,6 +541,7 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
     consumed_list, available_list = [], []
     result_count = cold_rows
 
+    psutil.cpu_percent(interval=None)  # Initialize CPU utilization tracker
     for i in range(1, n_runs + 1):
         try:
             m = _neo4j_timed_run(driver, cypher, params)
@@ -551,6 +561,9 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
     med_c   = median(valid_c) if valid_c else None
     cv      = (stdev(valid_c) / mean(valid_c) * 100) if len(valid_c) > 1 and mean(valid_c) > 0 else 0.0
 
+    client_cpu = psutil.cpu_percent(interval=None)
+    mem_stat = psutil.virtual_memory()
+
     return {
         "query_id":             q_id,
         "query_name":           query["name"],
@@ -564,6 +577,10 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
         # Result info
         "result_count":         result_count,
         "db_hits":              db_hits,
+        # Client-side system resource telemetry (via psutil)
+        "client_cpu_pct":       round(client_cpu, 2),
+        "client_ram_pct":       round(mem_stat.percent, 2),
+        "client_ram_used_mb":   round(mem_stat.used / (1024 * 1024), 2),
         # Warm timing (per-run lists for box plots)
         "warm_runs":            n_runs,
         "warm_consumed_ms":     consumed_list,
