@@ -66,5 +66,4 @@ CREATE INDEX idx_posts_timestamp       ON posts (timestamp);
 
 -- Hyperlinks indexes: covering foreign key joins and collaborative filtering
 CREATE INDEX idx_hyperlinks_post_id    ON hyperlinks (post_id);
-CREATE INDEX idx_hyperlinks_target_id  ON hyperlinks (target_subreddit_id);
 CREATE INDEX idx_hyperlinks_composite  ON hyperlinks (target_subreddit_id, post_id);

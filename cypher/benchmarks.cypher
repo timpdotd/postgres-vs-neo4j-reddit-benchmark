@@ -77,10 +77,10 @@ WHERE id(a) < id(b)
 RETURN a.name AS sub_a, b.name AS sub_b, count(*) AS mutual_hostile_links
 ORDER BY mutual_hostile_links DESC LIMIT 20;
 
-// T4-B: Bounded BFS shortest path up to depth 3 from seed
-// Access Pattern: Variable-length traversal (*2..6 graph edges = 1..3 subreddit hops).
+// T4-B: Bounded BFS shortest path up to depth 2 from seed
+// Access Pattern: Variable-length traversal (*2..4 graph edges = 1..2 subreddit hops).
 PROFILE
-MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..6]->(tgt:Subreddit)
+MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..4]->(tgt:Subreddit)
 WHERE src <> tgt
 WITH tgt, min(length(p) / 2) AS min_hops
 RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500;
@@ -100,10 +100,10 @@ MATCH (a:Subreddit {name: $seed})
 WHERE id(b) < id(c)
 RETURN a.name AS node_a, b.name AS node_b, c.name AS node_c LIMIT 50;
 
-// T5-B: Bounded BFS shortest path up to depth 4 from seed
-// Access Pattern: Variable-length traversal (*2..8 graph edges = 1..4 subreddit hops).
+// T5-B: Bounded BFS shortest path up to depth 3 from seed
+// Access Pattern: Variable-length traversal (*2..6 graph edges = 1..3 subreddit hops).
 PROFILE
-MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..8]->(tgt:Subreddit)
+MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..6]->(tgt:Subreddit)
 WHERE src <> tgt
 WITH tgt, min(length(p) / 2) AS min_hops
 RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500;

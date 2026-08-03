@@ -25,7 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "psycopg2-binary>=2.9.9",
+    "psycopg[binary]>=3.1.18",
     "neo4j>=5.18.0",
     "numpy>=1.26.0,<3.0.0",
     "pandas>=2.2.0",

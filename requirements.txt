@@ -10,7 +10,7 @@
 # =============================================================================
 
 # Database Drivers & Connection Connectors
-psycopg2-binary>=2.9.9         # High-performance PostgreSQL C-extension driver
+psycopg[binary]>=3.1.18        # High-performance PostgreSQL C-extension driver (v3)
 neo4j>=5.18.0                  # Official Neo4j Bolt protocol driver
 
 # Data Manipulation & Numerical Computing

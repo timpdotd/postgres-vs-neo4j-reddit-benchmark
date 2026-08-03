@@ -21,6 +21,12 @@ import time
 import subprocess
 from pathlib import Path
 
+try:
+    import psycopg
+    from neo4j import GraphDatabase
+except ImportError:
+    pass  # Handled by verify_dependencies()
+
 # ---------------------------------------------------------------------------
 # Configuration & Paths
 # ---------------------------------------------------------------------------
@@ -35,6 +41,18 @@ TSV_FILES = [
     DATA_DIR / "soc-redditHyperlinks-title.tsv",
 ]
 
+PG_CONFIG = {
+    "host":     os.getenv("PG_HOST",  "localhost"),
+    "port":     int(os.getenv("PG_PORT",  "5432")),
+    "dbname":   os.getenv("PG_DB",    "reddit_benchmark"),
+    "user":     os.getenv("PG_USER",  "reddit_user"),
+    "password": os.getenv("PG_PASS",  "reddit_password"),
+}
+
+NEO4J_URI  = os.getenv("NEO4J_URI",  "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASS = os.getenv("NEO4J_PASS", "reddit_password")
+
 
 def print_header(step: int, total: int, title: str) -> None:
     print("\n" + "#" * 75)
@@ -43,11 +61,11 @@ def print_header(step: int, total: int, title: str) -> None:
 
 
 def verify_dependencies() -> None:
-    """Check that core libraries (psycopg2, neo4j, psutil, pandas) are importable."""
+    """Check that core libraries (psycopg, neo4j, psutil, pandas) are importable."""
     print("[*] Verifying active Python environment dependencies...")
     missing = []
     for pkg, import_name in [
-        ("psycopg2-binary", "psycopg2"),
+        ("psycopg", "psycopg"),
         ("neo4j", "neo4j"),
         ("psutil", "psutil"),
         ("pandas", "pandas"),
@@ -78,6 +96,43 @@ def verify_dataset() -> None:
     for f in TSV_FILES:
         size_mb = f.stat().st_size / (1024 * 1024)
         print(f"    [+] Found {f.name} ({size_mb:.1f} MB)")
+
+
+def check_databases_populated() -> bool:
+    """Check if PostgreSQL and Neo4j already contain data."""
+    print("[*] Checking if databases are already populated...")
+    
+    # Check Postgres
+    pg_populated = False
+    try:
+        with psycopg.connect(**PG_CONFIG) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM subreddits;")
+                count = cur.fetchone()[0]
+                if count > 0:
+                    pg_populated = True
+    except Exception:
+        pass
+
+    # Check Neo4j
+    neo4j_populated = False
+    try:
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+        with driver.session() as session:
+            result = session.run("MATCH (n:Post) RETURN count(n) AS c")
+            count = result.single()["c"]
+            if count > 0:
+                neo4j_populated = True
+        driver.close()
+    except Exception:
+        pass
+
+    if pg_populated and neo4j_populated:
+        print("    [+] Both databases already contain data. Skipping ETL.")
+        return True
+    
+    print("    [-] Databases are empty or partially populated. ETL is required.")
+    return False
 
 
 def run_script(script_path: Path, step_name: str) -> float:
@@ -111,8 +166,13 @@ def main() -> None:
 
     # Step 2: ETL Loader
     print_header(2, total_steps, "Executing ETL Pipeline (scripts/load_data.py)")
-    load_time = run_script(LOAD_SCRIPT, "ETL Loader")
-    print(f"\n[+] ETL Pipeline completed in {load_time:.2f} seconds.")
+    
+    if check_databases_populated():
+        print("\n[+] Skipping ETL Pipeline (Data already loaded).")
+        load_time = 0.0
+    else:
+        load_time = run_script(LOAD_SCRIPT, "ETL Loader")
+        print(f"\n[+] ETL Pipeline completed in {load_time:.2f} seconds.")
 
     # Step 3: Benchmark Suite
     print_header(3, total_steps, "Executing Comparative Benchmark Suite (scripts/run_benchmarks.py)")
@@ -122,7 +182,7 @@ def main() -> None:
     # Step 4: Summary & Next Steps
     print_header(4, total_steps, "Pipeline Execution Complete!")
     print(f"[*] Total Pipeline Execution Time: {(load_time + bench_time):.2f} seconds.")
-    print("\n📊 Results & Analysis:")
+    print("\n[Chart] Results & Analysis:")
     print(f"    1. Raw benchmark JSON saved to: {DATA_DIR / 'benchmark_results.json'}")
     print(f"    2. To view charts, box plots, and Q12 ergonomic analysis, launch Jupyter:")
     print(f"           jupyter notebook {NOTEBOOK_PATH}\n")

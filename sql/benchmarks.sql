@@ -131,7 +131,7 @@ GROUP BY s_a.name, s_b.name
 ORDER BY mutual_hostile_links DESC
 LIMIT 20;
 
--- T4-B: Bounded BFS shortest path up to depth 3 from seed
+-- T4-B: Bounded BFS shortest path up to depth 2 from seed
 -- Access Pattern: Recursive CTE with array cycle detection joining posts and hyperlinks at each hop.
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 WITH RECURSIVE bfs(node_id, depth, path) AS (
@@ -143,7 +143,7 @@ WITH RECURSIVE bfs(node_id, depth, path) AS (
     FROM bfs b
     JOIN posts p      ON p.source_subreddit_id = b.node_id
     JOIN hyperlinks h ON h.post_id = p.id
-    WHERE b.depth < 3 AND NOT (h.target_subreddit_id = ANY(b.path))
+    WHERE b.depth < 2 AND NOT (h.target_subreddit_id = ANY(b.path))
 )
 SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
 FROM bfs
@@ -176,7 +176,7 @@ WHERE p_ab.post_label = -1 AND s_a.name = 'leagueoflegends'
   AND h_ab.target_subreddit_id < h_bc.target_subreddit_id
 LIMIT 50;
 
--- T5-B: Bounded BFS shortest path up to depth 4 from seed
+-- T5-B: Bounded BFS shortest path up to depth 3 from seed
 -- Access Pattern: 4-hop recursive CTE (working set expansion challenges buffer cache).
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 WITH RECURSIVE bfs(node_id, depth, path) AS (
@@ -188,7 +188,7 @@ WITH RECURSIVE bfs(node_id, depth, path) AS (
     FROM bfs b
     JOIN posts p      ON p.source_subreddit_id = b.node_id
     JOIN hyperlinks h ON h.post_id = p.id
-    WHERE b.depth < 4 AND NOT (h.target_subreddit_id = ANY(b.path))
+    WHERE b.depth < 3 AND NOT (h.target_subreddit_id = ANY(b.path))
 )
 SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
 FROM bfs

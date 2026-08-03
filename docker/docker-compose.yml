@@ -22,7 +22,7 @@ services:
     command: >
       postgres
       -c shared_buffers=512MB
-      -c work_mem=16MB
+      -c work_mem=128MB
       -c maintenance_work_mem=256MB
       -c effective_cache_size=1GB
       -c max_connections=100
@@ -48,9 +48,9 @@ services:
       # Enable LOAD CSV from import directory for rapid data ingestion
       NEO4J_dbms_security_allow__csv__import__from__file__urls: "true"
       # Memory allocation tuned for ~60k nodes and ~860k edges + analytical path finding
-      NEO4J_server_memory_heap_initial__size: 2G
-      NEO4J_server_memory_heap_max__size: 4G
-      NEO4J_server_memory_pagecache_size: 2G
+      NEO4J_server_memory_heap_initial__size: 512M
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
     ports:
       - "7474:7474" # HTTP / Neo4j Browser UI
       - "7687:7687" # Bolt protocol for Python driver & benchmarking
@@ -62,7 +62,7 @@ services:
       - ../data:/var/lib/neo4j/import
       - ../cypher:/cypher:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:7474 || exit 1"]
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p reddit_password 'RETURN 1' || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 5

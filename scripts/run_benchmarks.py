@@ -34,7 +34,7 @@ from pathlib import Path
 from statistics import median, mean, stdev
 from typing import Any
 
-import psycopg2
+import psycopg
 import psutil
 from neo4j import GraphDatabase
 
@@ -59,10 +59,17 @@ NEO4J_PASS = os.getenv("NEO4J_PASS", "reddit_password")
 DEFAULT_RUNS   = 5
 DEFAULT_OUTPUT = DATA_DIR / "benchmark_results.json"
 
+LOG_DIR = Path(__file__).parent.parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_DIR / "run_benchmarks.log", encoding="utf-8")
+    ]
 )
 log = logging.getLogger(__name__)
 
@@ -235,7 +242,7 @@ QUERIES: list[dict[str, Any]] = [
         "neo_params": lambda s: None,
     },
     {
-        "id": "T4-B", "name": "Bounded BFS depth 3 from seed_bfs", "tier": 4,
+        "id": "T4-B", "name": "Bounded BFS depth 2 from seed_bfs", "tier": 4,
         "pg_sql": """
             WITH RECURSIVE bfs(node_id, depth, path) AS (
                 SELECT s.id, 0, ARRAY[s.id] FROM subreddits s WHERE s.name = %(seed_bfs)s
@@ -244,7 +251,7 @@ QUERIES: list[dict[str, Any]] = [
                 FROM bfs b
                 JOIN posts p      ON p.source_subreddit_id = b.node_id
                 JOIN hyperlinks h ON h.post_id = p.id
-                WHERE b.depth < 3 AND NOT (h.target_subreddit_id = ANY(b.path))
+                WHERE b.depth < 2 AND NOT (h.target_subreddit_id = ANY(b.path))
             )
             SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
             FROM bfs JOIN subreddits s ON s.id = bfs.node_id
@@ -253,7 +260,7 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_bfs": s["seed_bfs"]},
         "neo_cypher": """
-            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..6]->(tgt:Subreddit)
+            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..4]->(tgt:Subreddit)
             WHERE src <> tgt
             WITH tgt, min(length(p) / 2) AS min_hops
             RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
@@ -289,7 +296,7 @@ QUERIES: list[dict[str, Any]] = [
         "neo_params": lambda s: {"seed": s["seed"]},
     },
     {
-        "id": "T5-B", "name": "Bounded BFS depth 4 from seed_bfs", "tier": 5,
+        "id": "T5-B", "name": "Bounded BFS depth 3 from seed_bfs", "tier": 5,
         "pg_sql": """
             WITH RECURSIVE bfs(node_id, depth, path) AS (
                 SELECT s.id, 0, ARRAY[s.id] FROM subreddits s WHERE s.name = %(seed_bfs)s
@@ -298,7 +305,7 @@ QUERIES: list[dict[str, Any]] = [
                 FROM bfs b
                 JOIN posts p      ON p.source_subreddit_id = b.node_id
                 JOIN hyperlinks h ON h.post_id = p.id
-                WHERE b.depth < 4 AND NOT (h.target_subreddit_id = ANY(b.path))
+                WHERE b.depth < 3 AND NOT (h.target_subreddit_id = ANY(b.path))
             )
             SELECT s.name AS reachable, MIN(bfs.depth) AS min_hops
             FROM bfs JOIN subreddits s ON s.id = bfs.node_id
@@ -307,7 +314,7 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_bfs": s["seed_bfs"]},
         "neo_cypher": """
-            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..8]->(tgt:Subreddit)
+            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..6]->(tgt:Subreddit)
             WHERE src <> tgt
             WITH tgt, min(length(p) / 2) AS min_hops
             RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
@@ -678,7 +685,7 @@ def main() -> None:
     parser.add_argument("--neo4j-only",  action="store_true")
     args = parser.parse_args()
 
-    conn   = psycopg2.connect(**PG_CONFIG)
+    conn   = psycopg.connect(**PG_CONFIG)
     seeds  = pick_seeds(conn)
     conn.close()
 
@@ -686,8 +693,7 @@ def main() -> None:
 
     if not args.neo4j_only:
         log.info("=== PostgreSQL: %d queries × %d warm runs ===", len(QUERIES), args.runs)
-        conn = psycopg2.connect(**PG_CONFIG)
-        conn.set_session(autocommit=True)
+        conn = psycopg.connect(**PG_CONFIG, autocommit=True)
         for q in QUERIES:
             log.info("Running %s: %s", q["id"], q["name"])
             all_results.append(run_pg_query(conn, q, seeds, args.runs))
