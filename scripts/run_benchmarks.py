@@ -30,6 +30,8 @@ import logging
 import math
 import os
 import time
+import threading
+import subprocess
 from pathlib import Path
 from statistics import median, mean, stdev
 from typing import Any
@@ -72,6 +74,67 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Background Memory Profiler (Docker Stats)
+# ---------------------------------------------------------------------------
+
+class MemoryProfiler:
+    def __init__(self):
+        self.running = False
+        self.thread = None
+        self.peak_pg_mb = 0.0
+        self.peak_neo_mb = 0.0
+
+    def start(self):
+        self.running = True
+        self.peak_pg_mb = 0.0
+        self.peak_neo_mb = 0.0
+        self.thread = threading.Thread(target=self._poll, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> dict:
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+        return {"postgres_peak_mb": self.peak_pg_mb, "neo4j_peak_mb": self.peak_neo_mb}
+
+    def _parse_mb(self, usage_str: str) -> float:
+        usage = usage_str.split(" / ")[0].strip()
+        val_str = "".join(c for c in usage if c.isdigit() or c == '.')
+        if not val_str: return 0.0
+        try:
+            val = float(val_str)
+            if "GiB" in usage or "GB" in usage: return val * 1024.0
+            if "MiB" in usage or "MB" in usage: return val
+            if "KiB" in usage or "KB" in usage: return val / 1024.0
+            return val / (1024.0*1024.0)
+        except ValueError:
+            return 0.0
+
+    def _poll(self):
+        while self.running:
+            try:
+                res = subprocess.run(
+                    ["docker", "stats", "--no-stream", "--format", "{{.Name}},{{.MemUsage}}"],
+                    capture_output=True, text=True, timeout=1.0
+                )
+                for line in res.stdout.strip().split('\\n'):
+                    if not line: continue
+                    parts = line.split(',')
+                    if len(parts) >= 2:
+                        name, usage = parts[0], parts[1]
+                        mb = self._parse_mb(usage)
+                        if "postgres" in name:
+                            self.peak_pg_mb = max(self.peak_pg_mb, mb)
+                        elif "neo4j" in name:
+                            self.peak_neo_mb = max(self.peak_neo_mb, mb)
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+memory_profiler = MemoryProfiler()
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +192,7 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
-            MATCH ()-[:REFERENCES]->(tgt:Subreddit)
+            MATCH ()-[:LINKED_TO]->(tgt:Subreddit)
             RETURN tgt.name AS subreddit, count(*) AS in_degree
             ORDER BY in_degree DESC LIMIT 20
         """,
@@ -178,9 +241,9 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
         "neo_cypher": """
-            MATCH (a:Subreddit {name: $seed_a})-[:POSTED]->(:Post)-[:REFERENCES]->(shared:Subreddit)
+            MATCH (a:Subreddit {name: $seed_a})-[:LINKED_TO]->(shared:Subreddit)
             WITH shared
-            MATCH (b:Subreddit {name: $seed_b})-[:POSTED]->(:Post)-[:REFERENCES]->(shared)
+            MATCH (b:Subreddit {name: $seed_b})-[:LINKED_TO]->(shared)
             RETURN shared.name AS shared_target ORDER BY shared_target LIMIT 25
         """,
         "neo_params": lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
@@ -210,9 +273,11 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
         "neo_cypher": """
-            MATCH (atk:Subreddit)-[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(a:Subreddit {name: $seed_a})
+            MATCH (atk:Subreddit)-[r1:LINKED_TO]->(a:Subreddit {name: $seed_a})
+            WHERE r1.post_label = -1
             WITH atk
-            MATCH (atk)-[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(b:Subreddit {name: $seed_b})
+            MATCH (atk)-[r2:LINKED_TO]->(b:Subreddit {name: $seed_b})
+            WHERE r2.post_label = -1
             RETURN atk.name AS common_attacker ORDER BY atk.name LIMIT 25
         """,
         "neo_params": lambda s: {"seed_a": s["seed_a"], "seed_b": s["seed_b"]},
@@ -233,9 +298,9 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: None,
         "neo_cypher": """
-            MATCH (a:Subreddit)-[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(b:Subreddit)
-                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(a)
-            WHERE id(a) < id(b)
+            MATCH (a:Subreddit)-[r1:LINKED_TO]->(b:Subreddit)-[r2:LINKED_TO]->(a)
+            WHERE r1.post_label = -1 AND r2.post_label = -1
+              AND elementId(a) < elementId(b)
             RETURN a.name AS sub_a, b.name AS sub_b, count(*) AS mutual_hostile_links
             ORDER BY mutual_hostile_links DESC LIMIT 20
         """,
@@ -260,9 +325,9 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_bfs": s["seed_bfs"]},
         "neo_cypher": """
-            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..4]->(tgt:Subreddit)
+            MATCH p = (src:Subreddit {name: $seed_bfs})-[:LINKED_TO*1..2]->(tgt:Subreddit)
             WHERE src <> tgt
-            WITH tgt, min(length(p) / 2) AS min_hops
+            WITH tgt, min(length(p)) AS min_hops
             RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
         """,
         "neo_params": lambda s: {"seed_bfs": s["seed_bfs"]},
@@ -286,11 +351,9 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed": s["seed"]},
         "neo_cypher": """
-            MATCH (a:Subreddit {name: $seed})
-                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(b:Subreddit)
-                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(c:Subreddit)
-                  -[:POSTED]->(:Post {post_label: -1})-[:REFERENCES]->(a)
-            WHERE id(b) < id(c)
+            MATCH (a:Subreddit {name: $seed})-[r1:LINKED_TO]->(b:Subreddit)-[r2:LINKED_TO]->(c:Subreddit)-[r3:LINKED_TO]->(a)
+            WHERE r1.post_label = -1 AND r2.post_label = -1 AND r3.post_label = -1
+              AND elementId(b) < elementId(c)
             RETURN a.name AS node_a, b.name AS node_b, c.name AS node_c LIMIT 50
         """,
         "neo_params": lambda s: {"seed": s["seed"]},
@@ -314,9 +377,9 @@ QUERIES: list[dict[str, Any]] = [
         """,
         "pg_params":  lambda s: {"seed_bfs": s["seed_bfs"]},
         "neo_cypher": """
-            MATCH p = (src:Subreddit {name: $seed_bfs})-[:POSTED|REFERENCES*2..6]->(tgt:Subreddit)
+            MATCH p = (src:Subreddit {name: $seed_bfs})-[:LINKED_TO*1..3]->(tgt:Subreddit)
             WHERE src <> tgt
-            WITH tgt, min(length(p) / 2) AS min_hops
+            WITH tgt, min(length(p)) AS min_hops
             RETURN tgt.name AS reachable, min_hops ORDER BY min_hops, tgt.name LIMIT 500
         """,
         "neo_params": lambda s: {"seed_bfs": s["seed_bfs"]},
@@ -418,6 +481,7 @@ def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
     result_count = cold_rows
 
     psutil.cpu_percent(interval=None)  # Initialize CPU utilization tracker
+    memory_profiler.start()
     for i in range(1, n_runs + 1):
         try:
             m = _pg_timed_run(conn, sql, params)
@@ -434,6 +498,8 @@ def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
         except Exception as exc:
             log.error("    warm %d FAILED: %s", i, exc); conn.rollback()
             exec_ms_list.append(float("nan"))
+
+    mem_peaks = memory_profiler.stop()
 
     valid = [t for t in exec_ms_list if not math.isnan(t)]
     total_hits  = sum(hits_list)
@@ -457,6 +523,8 @@ def run_pg_query(conn, query: dict, seeds: dict, n_runs: int) -> dict:
         "cold_rows":           cold_rows,
         # Result info
         "result_count":        result_count,
+        # Server-side memory profiling
+        "server_peak_ram_mb":  round(mem_peaks["postgres_peak_mb"], 2),
         # Client-side system resource telemetry (via psutil)
         "client_cpu_pct":      round(client_cpu, 2),
         "client_ram_pct":      round(mem_stat.percent, 2),
@@ -549,6 +617,7 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
     result_count = cold_rows
 
     psutil.cpu_percent(interval=None)  # Initialize CPU utilization tracker
+    memory_profiler.start()
     for i in range(1, n_runs + 1):
         try:
             m = _neo4j_timed_run(driver, cypher, params)
@@ -562,6 +631,8 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
             log.error("    warm %d FAILED: %s", i, exc)
             consumed_list.append(float("nan"))
             available_list.append(float("nan"))
+
+    mem_peaks = memory_profiler.stop()
 
     valid_c = [t for t in consumed_list  if not math.isnan(t)]
     valid_a = [t for t in available_list if not math.isnan(t)]
@@ -584,6 +655,8 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
         # Result info
         "result_count":         result_count,
         "db_hits":              db_hits,
+        # Server-side memory profiling
+        "server_peak_ram_mb":   round(mem_peaks["neo4j_peak_mb"], 2),
         # Client-side system resource telemetry (via psutil)
         "client_cpu_pct":       round(client_cpu, 2),
         "client_ram_pct":       round(mem_stat.percent, 2),

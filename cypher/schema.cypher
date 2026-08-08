@@ -58,6 +58,22 @@ CREATE INDEX post_idx_timestamp IF NOT EXISTS
     FOR (p:Post)
     ON (p.timestamp);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LINKED_TO RELATIONSHIP PROPERTY INDEXES
+// Enables fast hostile-filter traversals on the subreddit-to-subreddit shortcut
+// edge without scanning all 858k LINKED_TO edges.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Index on sentiment label for hostile-pair and mutual-attack pattern queries (T2-B, T3-C, T4-A, T5-A)
+CREATE INDEX linked_to_idx_label IF NOT EXISTS
+    FOR ()-[r:LINKED_TO]-()
+    ON (r.post_label);
+
+// Index on timestamp for temporal ordering of direct subreddit links
+CREATE INDEX linked_to_idx_timestamp IF NOT EXISTS
+    FOR ()-[r:LINKED_TO]-()
+    ON (r.timestamp);
+
 
 // =============================================================================
 // 86-DIMENSION POST_PROPERTIES LEGEND (0-indexed in Neo4j lists)

@@ -178,7 +178,10 @@ def export_csvs(subreddits: dict[str, int], posts: list[tuple], hyperlinks: set[
         for p in posts:
             # p: (post_int_id, post_id, src_id, ts, type, label, props_pg, props_list, src_name)
             ts_neo = p[3].replace(" ", "T")
-            writer_neo.writerow([p[0], p[1], p[2], ts_neo, p[4], p[5], p[6], p[8]])
+            # Write props for Neo4j as a simple pipe-delimited string instead of
+            # PostgreSQL {} literal, eliminating 70M in-JVM Cypher string ops during LOAD CSV.
+            props_neo = "|".join(str(x) for x in p[7]) if p[7] else ""
+            writer_neo.writerow([p[0], p[1], p[2], ts_neo, p[4], p[5], props_neo, p[8]])
             writer_pg.writerow([p[0], p[1], p[2], ts_neo, p[4], p[5], p[6]])
             
     # 3. Write links.csv (for Neo4j) and links_pg.csv (for PostgreSQL)
@@ -204,7 +207,7 @@ def export_csvs(subreddits: dict[str, int], posts: list[tuple], hyperlinks: set[
 # Phase 3: PostgreSQL High-Speed Bulk Loading
 # ---------------------------------------------------------------------------
 
-def load_postgresql() -> None:
+def load_postgresql() -> float:
     log.info("=== PostgreSQL: Connecting and applying DDL ===")
     conn = psycopg.connect(**PG_CONFIG)
     conn.autocommit = False
@@ -240,6 +243,22 @@ def load_postgresql() -> None:
     el = time.perf_counter() - t0
     log.info("PostgreSQL native bulk data load finished in %.2f s.", el)
 
+    # Batch-create all indexes, UNIQUE constraints and FK constraints post-load.
+    # This avoids the 2-3x COPY throughput penalty from incremental B-Tree maintenance.
+    log.info("Applying deferred indexes and constraints (schema_indexes.sql)...")
+    schema_idx = Path(__file__).parent.parent / "sql" / "schema_indexes.sql"
+    with open(schema_idx, "r", encoding="utf-8-sig") as f:
+        # Strip all single-line SQL comments before splitting by semicolon
+        lines = [line for line in f if not line.lstrip().startswith("--")]
+        clean_sql = "".join(lines)
+        
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            stmts = [s.strip() for s in clean_sql.split(";") if s.strip()]
+            for stmt in stmts:
+                cur.execute(stmt)
+    log.info("Deferred indexes and constraints applied.")
+
     # VACUUM ANALYZE for query planner statistics
     log.info("Running VACUUM ANALYZE to compute table statistics...")
     conn.autocommit = True
@@ -247,20 +266,32 @@ def load_postgresql() -> None:
         cur.execute("VACUUM ANALYZE subreddits, posts, hyperlinks;")
     conn.close()
     log.info("PostgreSQL database ready and optimized.")
+    return el
 
 
 # ---------------------------------------------------------------------------
 # Phase 4: Neo4j High-Speed Native CSV Bulk Loading
 # ---------------------------------------------------------------------------
 
-def load_neo4j() -> None:
+def load_neo4j() -> float:
     log.info("=== Neo4j: Connecting and applying constraints ===")
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS), keep_alive=True, max_connection_lifetime=3600)
 
     # Reset graph
     with driver.session() as session:
-        log.info("Clearing existing Neo4j graph...")
-        session.run("MATCH (n) DETACH DELETE n")
+        # Clear relationships first to avoid supernode OOM during DETACH DELETE
+        log.info("Clearing relationships in batches (preventing timeouts/OOM)...")
+        deleted_rels = 1
+        while deleted_rels > 0:
+            res = session.run("MATCH ()-[r]->() WITH r LIMIT 50000 DELETE r RETURN count(r) AS c")
+            deleted_rels = res.single()["c"]
+
+        # Clear disconnected nodes
+        log.info("Clearing nodes in batches...")
+        deleted_nodes = 1
+        while deleted_nodes > 0:
+            res = session.run("MATCH (n) WITH n LIMIT 50000 DELETE n RETURN count(n) AS c")
+            deleted_nodes = res.single()["c"]
         
         # Apply schema constraints and indexes
         schema_cypher = Path(__file__).parent.parent / "cypher" / "schema.cypher"
@@ -294,7 +325,8 @@ def load_neo4j() -> None:
                     timestamp:       datetime(row.ts),
                     source_type:     row.type,
                     post_label:      toInteger(row.label),
-                    post_properties: CASE WHEN row.props = '{}' THEN [] ELSE [x IN split(substring(row.props, 1, size(row.props)-2), ',') | toFloat(x)] END
+                    post_properties: CASE WHEN row.props = '' THEN []
+                                          ELSE [x IN split(row.props, '|') | toFloat(x)] END
                 })
                 CREATE (src)-[:POSTED]->(p)
             } IN TRANSACTIONS OF 10000 ROWS
@@ -320,6 +352,7 @@ def load_neo4j() -> None:
     driver.close()
     el = time.perf_counter() - t0
     log.info("Neo4j native bulk data load finished in %.2f s.", el)
+    return el
 
 
 # ---------------------------------------------------------------------------
@@ -343,17 +376,29 @@ def main() -> None:
 
     export_csvs(subreddits, posts, hyperlinks)
 
+    pg_time = 0.0
+    neo4j_time = 0.0
+
     if not args.skip_postgres:
-        load_postgresql()
+        pg_time = load_postgresql()
     else:
         log.info("Skipping PostgreSQL load as requested.")
 
     if not args.skip_neo4j:
-        load_neo4j()
+        neo4j_time = load_neo4j()
     else:
         log.info("Skipping Neo4j load as requested.")
         
     log.info("=== ETL Pipeline Complete! Ready for benchmarking ===")
+
+    # Export ETL timings
+    etl_metrics = {
+        "postgres_load_seconds": pg_time,
+        "neo4j_load_seconds": neo4j_time
+    }
+    with open(DATA_DIR / "etl_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(etl_metrics, f, indent=4)
+    log.info("ETL metrics saved to data/etl_metrics.json")
 
 
 if __name__ == "__main__":

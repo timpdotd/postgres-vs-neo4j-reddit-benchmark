@@ -34,6 +34,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 LOAD_SCRIPT = PROJECT_ROOT / "scripts" / "load_data.py"
 BENCHMARK_SCRIPT = PROJECT_ROOT / "scripts" / "run_benchmarks.py"
+MEASURE_SCRIPT = PROJECT_ROOT / "scripts" / "measure_storage.py"
+CONCURRENCY_SCRIPT = PROJECT_ROOT / "scripts" / "run_concurrency.py"
+REPORT_SCRIPT = PROJECT_ROOT / "scripts" / "generate_extended_report.py"
 NOTEBOOK_PATH = PROJECT_ROOT / "notebooks" / "results_analysis.ipynb"
 
 TSV_FILES = [
@@ -154,7 +157,7 @@ def run_script(script_path: Path, step_name: str) -> float:
 
 
 def main() -> None:
-    total_steps = 4
+    total_steps = 6
     print("\n" + "=" * 75)
     print("  POSTGRESQL vs. NEO4J — MASTER BENCHMARK PIPELINE ORCHESTRATION")
     print("=" * 75)
@@ -174,17 +177,31 @@ def main() -> None:
         load_time = run_script(LOAD_SCRIPT, "ETL Loader")
         print(f"\n[+] ETL Pipeline completed in {load_time:.2f} seconds.")
 
+    print("\n[*] Running Storage Profiler (scripts/measure_storage.py)...")
+    run_script(MEASURE_SCRIPT, "Storage Profiler")
+
     # Step 3: Benchmark Suite
     print_header(3, total_steps, "Executing Comparative Benchmark Suite (scripts/run_benchmarks.py)")
     bench_time = run_script(BENCHMARK_SCRIPT, "Benchmark Runner")
     print(f"\n[+] Benchmark Suite completed in {bench_time:.2f} seconds.")
 
-    # Step 4: Summary & Next Steps
-    print_header(4, total_steps, "Pipeline Execution Complete!")
-    print(f"[*] Total Pipeline Execution Time: {(load_time + bench_time):.2f} seconds.")
+    # Step 4: Concurrency & Throughput
+    print_header(4, total_steps, "Executing Concurrency Tests (scripts/run_concurrency.py)")
+    conc_time = run_script(CONCURRENCY_SCRIPT, "Concurrency Runner")
+    print(f"\n[+] Concurrency Tests completed in {conc_time:.2f} seconds.")
+
+    # Step 5: Generate Report
+    print_header(5, total_steps, "Generating Extended Markdown Report (scripts/generate_extended_report.py)")
+    rep_time = run_script(REPORT_SCRIPT, "Report Generator")
+    print(f"\n[+] Report Generation completed in {rep_time:.2f} seconds.")
+
+    # Step 6: Summary & Next Steps
+    print_header(6, total_steps, "Pipeline Execution Complete!")
+    print(f"[*] Total Pipeline Execution Time: {(load_time + bench_time + conc_time + rep_time):.2f} seconds.")
     print("\n[Chart] Results & Analysis:")
     print(f"    1. Raw benchmark JSON saved to: {DATA_DIR / 'benchmark_results.json'}")
-    print(f"    2. To view charts, box plots, and Q12 ergonomic analysis, launch Jupyter:")
+    print(f"    2. Extended Markdown Report: {PROJECT_ROOT / 'extended_analysis.md'}")
+    print(f"    3. To view charts, box plots, and Q12 ergonomic analysis, launch Jupyter:")
     print(f"           jupyter notebook {NOTEBOOK_PATH}\n")
     print("=" * 75 + "\n")
 
