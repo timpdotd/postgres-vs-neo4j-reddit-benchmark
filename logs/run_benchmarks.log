@@ -2037,3 +2037,624 @@
 18:31:34  INFO          warm 3/3: consumed=44.0 ms  available=1.0 ms
 18:31:35  INFO      Results saved → C:\Users\david\Desktop\postgres-vs-neo4j-reddit-benchmark\data\benchmark_results.json
 18:31:35  INFO      Open notebooks/results_analysis.ipynb to generate charts.
+21:24:51  INFO      Seeds:  seed=subredditdrama  seed_a=subredditdrama (deg 7457)  seed_b=bestof (deg 5852)  seed_bfs=childfree (deg 81)
+21:24:51  INFO      === PostgreSQL: 10 queries × 3 warm runs ===
+21:24:52  INFO      Running T1-B: All outgoing links from seed
+21:24:52  INFO        [PG] T1-B cold run...
+21:24:52  INFO          cold=364.4 ms  rows=7457
+21:24:52  INFO          warm 1/3: exec=27.5 ms  plan=0.88 ms  hits=178396  reads=0
+21:24:52  INFO          warm 2/3: exec=36.6 ms  plan=0.90 ms  hits=178396  reads=0
+21:24:52  INFO          warm 3/3: exec=41.8 ms  plan=0.88 ms  hits=178396  reads=0
+21:24:54  INFO      Running T1-C: Hostile links only from seed
+21:24:54  INFO        [PG] T1-C cold run...
+21:24:54  INFO          cold=158.6 ms  rows=2530
+21:24:54  INFO          warm 1/3: exec=9.8 ms  plan=0.95 ms  hits=63698  reads=0
+21:24:54  INFO          warm 2/3: exec=9.9 ms  plan=0.92 ms  hits=63698  reads=0
+21:24:54  INFO          warm 3/3: exec=11.2 ms  plan=0.73 ms  hits=63698  reads=0
+21:24:56  INFO      Running T2-A: Global in-degree ranking (top 20)
+21:24:56  INFO        [PG] T2-A cold run...
+21:24:57  INFO          cold=193.9 ms  rows=20
+21:24:57  INFO          warm 1/3: exec=88.8 ms  plan=0.57 ms  hits=4202  reads=0
+21:24:57  INFO          warm 2/3: exec=165.3 ms  plan=0.49 ms  hits=4202  reads=0
+21:24:57  INFO          warm 3/3: exec=88.6 ms  plan=0.49 ms  hits=4202  reads=0
+21:24:58  INFO      Running T2-B: Top-20 subreddits by hostile link count
+21:24:58  INFO        [PG] T2-B cold run...
+21:24:58  INFO          cold=11.2 ms  rows=20
+21:24:58  INFO          warm 1/3: exec=12.6 ms  plan=0.37 ms  hits=1437  reads=0
+21:24:58  INFO          warm 2/3: exec=12.7 ms  plan=0.57 ms  hits=1437  reads=0
+21:24:59  INFO          warm 3/3: exec=14.5 ms  plan=0.38 ms  hits=1437  reads=0
+21:25:00  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+21:25:00  INFO        [PG] T3-A cold run...
+21:25:00  INFO          cold=41.8 ms  rows=25
+21:25:00  INFO          warm 1/3: exec=53.5 ms  plan=1.58 ms  hits=401365  reads=0
+21:25:00  INFO          warm 2/3: exec=67.1 ms  plan=1.65 ms  hits=401365  reads=0
+21:25:00  INFO          warm 3/3: exec=81.6 ms  plan=1.67 ms  hits=401365  reads=0
+21:25:02  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+21:25:02  INFO        [PG] T3-C cold run...
+21:25:02  INFO          cold=149.4 ms  rows=16
+21:25:02  INFO          warm 1/3: exec=8.6 ms  plan=1.33 ms  hits=28113  reads=0
+21:25:02  INFO          warm 2/3: exec=5.2 ms  plan=1.22 ms  hits=28113  reads=0
+21:25:02  INFO          warm 3/3: exec=5.6 ms  plan=1.21 ms  hits=28113  reads=0
+21:25:03  INFO      Running T4-A: Global mutual hostile pairs
+21:25:03  INFO        [PG] T4-A cold run...
+21:25:04  INFO          cold=163.1 ms  rows=20
+21:25:04  INFO          warm 1/3: exec=161.3 ms  plan=13.02 ms  hits=2287116  reads=0
+21:25:04  INFO          warm 2/3: exec=120.4 ms  plan=10.38 ms  hits=2287116  reads=0
+21:25:04  INFO          warm 3/3: exec=125.1 ms  plan=11.14 ms  hits=2287116  reads=0
+21:25:05  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+21:25:05  INFO        [PG] T4-B cold run...
+21:25:08  INFO          cold=2534.8 ms  rows=500
+21:25:08  INFO          warm 1/3: exec=70.7 ms  plan=0.50 ms  hits=481683  reads=0
+21:25:08  INFO          warm 2/3: exec=74.5 ms  plan=0.45 ms  hits=481683  reads=0
+21:25:08  INFO          warm 3/3: exec=79.1 ms  plan=0.54 ms  hits=481683  reads=0
+21:25:09  INFO      Running T5-A: 3-node hostile cycles seeded
+21:25:09  INFO        [PG] T5-A cold run...
+21:25:09  INFO          cold=71.1 ms  rows=50
+21:25:09  INFO          warm 1/3: exec=30.1 ms  plan=55.81 ms  hits=175205  reads=0
+21:25:10  INFO          warm 2/3: exec=36.9 ms  plan=65.93 ms  hits=175205  reads=0
+21:25:10  INFO          warm 3/3: exec=27.3 ms  plan=56.40 ms  hits=175205  reads=0
+21:25:11  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+21:25:11  INFO        [PG] T5-B cold run...
+21:25:31  INFO          cold=19810.3 ms  rows=500
+21:25:49  INFO          warm 1/3: exec=18577.0 ms  plan=0.77 ms  hits=58066259  reads=0
+21:26:05  INFO          warm 2/3: exec=15527.5 ms  plan=0.68 ms  hits=58066259  reads=0
+21:26:21  INFO          warm 3/3: exec=15832.4 ms  plan=1.11 ms  hits=58066259  reads=0
+21:26:21  INFO      === Neo4j: 10 queries × 3 warm runs + 1 PROFILE ===
+21:26:21  INFO      Running T1-B: All outgoing links from seed
+21:26:21  INFO        [Neo4j] T1-B cold run...
+21:26:24  INFO          cold=2980.0 ms  rows=7457
+21:26:24  INFO          profiling for db_hits (not timed)...
+21:26:25  INFO          db_hits=81673
+21:26:26  INFO          warm 1/3: consumed=96.0 ms  available=3.0 ms
+21:26:27  INFO          warm 2/3: consumed=76.0 ms  available=2.0 ms
+21:26:28  INFO          warm 3/3: consumed=139.0 ms  available=87.0 ms
+21:26:30  INFO      Running T1-C: Hostile links only from seed
+21:26:30  INFO        [Neo4j] T1-C cold run...
+21:26:32  INFO          cold=2141.1 ms  rows=2530
+21:26:32  INFO          profiling for db_hits (not timed)...
+21:26:32  INFO          db_hits=37552
+21:26:33  INFO          warm 1/3: consumed=32.0 ms  available=2.0 ms
+21:26:33  INFO          warm 2/3: consumed=35.0 ms  available=4.0 ms
+21:26:34  INFO          warm 3/3: consumed=27.0 ms  available=3.0 ms
+21:26:34  INFO      Running T2-A: Global in-degree ranking (top 20)
+21:26:34  INFO        [Neo4j] T2-A cold run...
+21:26:34  INFO          cold=374.4 ms  rows=20
+21:26:34  INFO          profiling for db_hits (not timed)...
+21:26:35  INFO          db_hits=291026
+21:26:35  INFO          warm 1/3: consumed=142.0 ms  available=3.0 ms
+21:26:35  INFO          warm 2/3: consumed=108.0 ms  available=2.0 ms
+21:26:35  INFO          warm 3/3: consumed=99.0 ms  available=2.0 ms
+21:26:36  INFO      Running T2-B: Top-20 subreddits by hostile link count
+21:26:36  INFO        [Neo4j] T2-B cold run...
+21:26:36  INFO          cold=178.6 ms  rows=20
+21:26:36  INFO          profiling for db_hits (not timed)...
+21:26:36  INFO          db_hits=81013
+21:26:36  INFO          warm 1/3: consumed=34.0 ms  available=2.0 ms
+21:26:36  INFO          warm 2/3: consumed=41.0 ms  available=2.0 ms
+21:26:36  INFO          warm 3/3: consumed=41.0 ms  available=2.0 ms
+21:26:38  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+21:26:38  INFO        [Neo4j] T3-A cold run...
+21:26:38  INFO          cold=318.1 ms  rows=25
+21:26:38  INFO          profiling for db_hits (not timed)...
+21:26:38  INFO          db_hits=124638
+21:26:38  INFO          warm 1/3: consumed=70.0 ms  available=6.0 ms
+21:26:38  INFO          warm 2/3: consumed=63.0 ms  available=2.0 ms
+21:26:39  INFO          warm 3/3: consumed=45.0 ms  available=2.0 ms
+21:26:40  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+21:26:40  INFO        [Neo4j] T3-C cold run...
+21:26:40  INFO          cold=293.8 ms  rows=25
+21:26:40  INFO          profiling for db_hits (not timed)...
+21:26:40  INFO          db_hits=2579
+21:26:40  INFO          warm 1/3: consumed=4.0 ms  available=2.0 ms
+21:26:40  INFO          warm 2/3: consumed=4.0 ms  available=2.0 ms
+21:26:40  INFO          warm 3/3: consumed=7.0 ms  available=2.0 ms
+21:26:42  INFO      Running T4-A: Global mutual hostile pairs
+21:26:42  INFO        [Neo4j] T4-A cold run...
+21:26:42  INFO          cold=568.4 ms  rows=20
+21:26:42  INFO          profiling for db_hits (not timed)...
+21:26:43  INFO          db_hits=513847
+21:26:43  INFO          warm 1/3: consumed=217.0 ms  available=1.0 ms
+21:26:43  INFO          warm 2/3: consumed=152.0 ms  available=2.0 ms
+21:26:43  INFO          warm 3/3: consumed=171.0 ms  available=2.0 ms
+21:26:44  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+21:26:44  INFO        [Neo4j] T4-B cold run...
+21:26:45  INFO          cold=287.9 ms  rows=500
+21:26:45  INFO          profiling for db_hits (not timed)...
+21:26:45  INFO          db_hits=14233
+21:26:45  INFO          warm 1/3: consumed=14.0 ms  available=3.0 ms
+21:26:45  INFO          warm 2/3: consumed=15.0 ms  available=2.0 ms
+21:26:45  INFO          warm 3/3: consumed=15.0 ms  available=2.0 ms
+21:26:46  INFO      Running T5-A: 3-node hostile cycles seeded
+21:26:46  INFO        [Neo4j] T5-A cold run...
+21:26:47  INFO          cold=453.5 ms  rows=50
+21:26:47  INFO          profiling for db_hits (not timed)...
+21:26:47  INFO          db_hits=59585
+21:26:47  INFO          warm 1/3: consumed=62.0 ms  available=3.0 ms
+21:26:47  INFO          warm 2/3: consumed=47.0 ms  available=5.0 ms
+21:26:47  INFO          warm 3/3: consumed=48.0 ms  available=3.0 ms
+21:26:48  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+21:26:48  INFO        [Neo4j] T5-B cold run...
+21:26:48  INFO          cold=190.2 ms  rows=500
+21:26:48  INFO          profiling for db_hits (not timed)...
+21:26:49  INFO          db_hits=14252
+21:26:49  INFO          warm 1/3: consumed=9.0 ms  available=2.0 ms
+21:26:49  INFO          warm 2/3: consumed=9.0 ms  available=2.0 ms
+21:26:49  INFO          warm 3/3: consumed=9.0 ms  available=3.0 ms
+21:26:50  INFO      Results saved → C:\Users\david\Desktop\postgres-vs-neo4j-reddit-benchmark\data\benchmark_results.json
+21:26:50  INFO      Open notebooks/results_analysis.ipynb to generate charts.
+21:35:40  INFO      Seeds:  seed=subredditdrama  seed_a=subredditdrama (deg 17149)  seed_b=bestof (deg 12877)  seed_bfs=magicskyfairy (deg 184)
+21:35:40  INFO      === PostgreSQL: 10 queries × 3 warm runs ===
+21:35:40  INFO      Running T1-B: All outgoing links from seed
+21:35:40  INFO        [PG] T1-B cold run...
+21:35:41  INFO          cold=991.1 ms  rows=17149
+21:35:41  INFO          warm 1/3: exec=91.2 ms  plan=0.96 ms  hits=411163  reads=0
+21:35:41  INFO          warm 2/3: exec=89.3 ms  plan=1.39 ms  hits=411163  reads=0
+21:35:41  INFO          warm 3/3: exec=71.4 ms  plan=0.85 ms  hits=411163  reads=0
+21:35:42  INFO      Running T1-C: Hostile links only from seed
+21:35:42  INFO        [PG] T1-C cold run...
+21:35:43  INFO          cold=29.2 ms  rows=5633
+21:35:43  INFO          warm 1/3: exec=27.3 ms  plan=0.82 ms  hits=141468  reads=0
+21:35:43  INFO          warm 2/3: exec=27.8 ms  plan=0.76 ms  hits=141468  reads=0
+21:35:43  INFO          warm 3/3: exec=32.6 ms  plan=0.90 ms  hits=141468  reads=0
+21:35:44  INFO      Running T2-A: Global in-degree ranking (top 20)
+21:35:44  INFO        [PG] T2-A cold run...
+21:35:44  INFO          cold=119.9 ms  rows=20
+21:35:44  INFO          warm 1/3: exec=181.4 ms  plan=0.33 ms  hits=10062  reads=0
+21:35:44  INFO          warm 2/3: exec=155.7 ms  plan=0.33 ms  hits=10062  reads=0
+21:35:45  INFO          warm 3/3: exec=153.3 ms  plan=0.52 ms  hits=10062  reads=0
+21:35:46  INFO      Running T2-B: Top-20 subreddits by hostile link count
+21:35:46  INFO        [PG] T2-B cold run...
+21:35:46  INFO          cold=22.6 ms  rows=20
+21:35:46  INFO          warm 1/3: exec=28.3 ms  plan=0.42 ms  hits=3012  reads=0
+21:35:46  INFO          warm 2/3: exec=30.7 ms  plan=0.33 ms  hits=3012  reads=0
+21:35:46  INFO          warm 3/3: exec=33.2 ms  plan=0.38 ms  hits=3012  reads=0
+21:35:47  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+21:35:47  INFO        [PG] T3-A cold run...
+21:35:47  INFO          cold=110.6 ms  rows=25
+21:35:47  INFO          warm 1/3: exec=103.7 ms  plan=1.27 ms  hits=905614  reads=0
+21:35:48  INFO          warm 2/3: exec=103.6 ms  plan=1.44 ms  hits=905614  reads=0
+21:35:48  INFO          warm 3/3: exec=92.6 ms  plan=1.30 ms  hits=905614  reads=0
+21:35:49  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+21:35:49  INFO        [PG] T3-C cold run...
+21:35:49  INFO          cold=130.1 ms  rows=25
+21:35:49  INFO          warm 1/3: exec=21.3 ms  plan=1.50 ms  hits=81977  reads=0
+21:35:49  INFO          warm 2/3: exec=16.3 ms  plan=1.78 ms  hits=81977  reads=0
+21:35:49  INFO          warm 3/3: exec=20.8 ms  plan=1.46 ms  hits=81977  reads=0
+21:35:50  INFO      Running T4-A: Global mutual hostile pairs
+21:35:50  INFO        [PG] T4-A cold run...
+21:35:51  INFO          cold=345.0 ms  rows=20
+21:35:51  INFO          warm 1/3: exec=411.9 ms  plan=8.47 ms  hits=1093710  reads=0
+21:35:52  INFO          warm 2/3: exec=380.5 ms  plan=8.19 ms  hits=1093794  reads=0
+21:35:52  INFO          warm 3/3: exec=367.1 ms  plan=8.09 ms  hits=1094406  reads=0
+21:35:52  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+21:35:52  INFO        [PG] T4-B cold run...
+21:35:53  INFO          cold=596.1 ms  rows=500
+21:35:54  INFO          warm 1/3: exec=567.3 ms  plan=0.48 ms  hits=3255383  reads=0
+21:35:54  INFO          warm 2/3: exec=615.6 ms  plan=0.60 ms  hits=3255383  reads=0
+21:35:55  INFO          warm 3/3: exec=693.7 ms  plan=0.51 ms  hits=3255383  reads=0
+21:35:56  INFO      Running T5-A: 3-node hostile cycles seeded
+21:35:56  INFO        [PG] T5-A cold run...
+21:35:56  INFO          cold=86.8 ms  rows=50
+21:35:56  INFO          warm 1/3: exec=27.5 ms  plan=74.47 ms  hits=102143  reads=0
+21:35:56  INFO          warm 2/3: exec=21.6 ms  plan=73.80 ms  hits=102143  reads=0
+21:35:56  INFO          warm 3/3: exec=19.9 ms  plan=56.44 ms  hits=102143  reads=0
+21:35:58  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+21:35:58  INFO        [PG] T5-B cold run...
+21:43:35  INFO          cold=457662.7 ms  rows=500
+21:48:15  INFO          warm 1/3: exec=279328.9 ms  plan=97.13 ms  hits=931195486  reads=0
+21:52:32  INFO          warm 2/3: exec=257604.7 ms  plan=37.71 ms  hits=931195486  reads=0
+21:56:13  INFO          warm 3/3: exec=220922.9 ms  plan=36.17 ms  hits=931195486  reads=0
+21:56:14  INFO      === Neo4j: 10 queries × 3 warm runs + 1 PROFILE ===
+21:56:14  INFO      Running T1-B: All outgoing links from seed
+21:56:14  INFO        [Neo4j] T1-B cold run...
+21:56:28  INFO          cold=14440.3 ms  rows=17149
+21:56:28  INFO          profiling for db_hits (not timed)...
+21:56:32  INFO          db_hits=187405
+21:56:35  INFO          warm 1/3: consumed=1113.0 ms  available=7.0 ms
+21:56:43  INFO          warm 2/3: consumed=5521.0 ms  available=3.0 ms
+21:56:46  INFO          warm 3/3: consumed=1339.0 ms  available=3.0 ms
+21:56:47  INFO      Running T1-C: Hostile links only from seed
+21:56:47  INFO        [Neo4j] T1-C cold run...
+21:56:49  INFO          cold=2183.5 ms  rows=5633
+21:56:49  INFO          profiling for db_hits (not timed)...
+21:56:50  INFO          db_hits=84379
+21:56:51  INFO          warm 1/3: consumed=381.0 ms  available=4.0 ms
+21:56:55  INFO          warm 2/3: consumed=2828.0 ms  available=4.0 ms
+21:56:56  INFO          warm 3/3: consumed=844.0 ms  available=114.0 ms
+21:56:58  INFO      Running T2-A: Global in-degree ranking (top 20)
+21:56:58  INFO        [Neo4j] T2-A cold run...
+21:57:00  INFO          cold=2520.6 ms  rows=20
+21:57:00  INFO          profiling for db_hits (not timed)...
+21:57:02  INFO          db_hits=625235
+21:57:04  INFO          warm 1/3: consumed=1793.0 ms  available=5.0 ms
+21:57:09  INFO          warm 2/3: consumed=4608.0 ms  available=2.0 ms
+21:57:11  INFO          warm 3/3: consumed=2439.0 ms  available=28.0 ms
+21:57:11  INFO      Running T2-B: Top-20 subreddits by hostile link count
+21:57:11  INFO        [Neo4j] T2-B cold run...
+21:57:12  INFO          cold=472.2 ms  rows=20
+21:57:12  INFO          profiling for db_hits (not timed)...
+21:57:12  INFO          db_hits=202777
+21:57:12  INFO          warm 1/3: consumed=161.0 ms  available=2.0 ms
+21:57:12  INFO          warm 2/3: consumed=104.0 ms  available=6.0 ms
+21:57:12  INFO          warm 3/3: consumed=88.0 ms  available=1.0 ms
+21:57:14  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+21:57:14  INFO        [Neo4j] T3-A cold run...
+21:57:14  INFO          cold=454.1 ms  rows=25
+21:57:14  INFO          profiling for db_hits (not timed)...
+21:57:14  INFO          db_hits=519961
+21:57:14  INFO          warm 1/3: consumed=240.0 ms  available=1.0 ms
+21:57:15  INFO          warm 2/3: consumed=203.0 ms  available=2.0 ms
+21:57:15  INFO          warm 3/3: consumed=300.0 ms  available=1.0 ms
+21:57:16  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+21:57:16  INFO        [Neo4j] T3-C cold run...
+21:57:17  INFO          cold=984.0 ms  rows=25
+21:57:17  INFO          profiling for db_hits (not timed)...
+21:57:17  INFO          db_hits=5853
+21:57:17  INFO          warm 1/3: consumed=13.0 ms  available=2.0 ms
+21:57:17  INFO          warm 2/3: consumed=8.0 ms  available=3.0 ms
+21:57:17  INFO          warm 3/3: consumed=17.0 ms  available=4.0 ms
+21:57:18  INFO      Running T4-A: Global mutual hostile pairs
+21:57:18  INFO        [Neo4j] T4-A cold run...
+21:57:28  INFO          cold=10076.0 ms  rows=20
+21:57:28  INFO          profiling for db_hits (not timed)...
+21:57:33  INFO          db_hits=1433975
+21:57:34  INFO          warm 1/3: consumed=1727.0 ms  available=1.0 ms
+21:57:35  INFO          warm 2/3: consumed=601.0 ms  available=1.0 ms
+21:57:37  INFO          warm 3/3: consumed=1505.0 ms  available=1.0 ms
+21:57:37  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+21:57:37  INFO        [Neo4j] T4-B cold run...
+21:57:38  INFO          cold=312.5 ms  rows=500
+21:57:38  INFO          profiling for db_hits (not timed)...
+21:57:38  INFO          db_hits=53787
+21:57:38  INFO          warm 1/3: consumed=46.0 ms  available=1.0 ms
+21:57:38  INFO          warm 2/3: consumed=47.0 ms  available=2.0 ms
+21:57:38  INFO          warm 3/3: consumed=39.0 ms  available=1.0 ms
+21:57:39  INFO      Running T5-A: 3-node hostile cycles seeded
+21:57:39  INFO        [Neo4j] T5-A cold run...
+21:57:42  INFO          cold=2361.2 ms  rows=50
+21:57:42  INFO          profiling for db_hits (not timed)...
+21:57:42  INFO          db_hits=125001
+21:57:42  INFO          warm 1/3: consumed=163.0 ms  available=2.0 ms
+21:57:42  INFO          warm 2/3: consumed=81.0 ms  available=2.0 ms
+21:57:42  INFO          warm 3/3: consumed=71.0 ms  available=1.0 ms
+21:57:43  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+21:57:43  INFO        [Neo4j] T5-B cold run...
+21:57:44  INFO          cold=219.0 ms  rows=500
+21:57:44  INFO          profiling for db_hits (not timed)...
+21:57:44  INFO          db_hits=53796
+21:57:44  INFO          warm 1/3: consumed=23.0 ms  available=2.0 ms
+21:57:44  INFO          warm 2/3: consumed=26.0 ms  available=2.0 ms
+21:57:44  INFO          warm 3/3: consumed=26.0 ms  available=2.0 ms
+21:57:45  INFO      Results saved → C:\Users\david\Desktop\postgres-vs-neo4j-reddit-benchmark\data\benchmark_results.json
+21:57:45  INFO      Open notebooks/results_analysis.ipynb to generate charts.
+22:33:06  INFO      Seeds:  seed=subredditdrama  seed_a=subredditdrama (deg 24396)  seed_b=bestof (deg 21170)  seed_bfs=mlplounge (deg 374)
+22:33:06  INFO      === PostgreSQL: 10 queries × 3 warm runs ===
+22:33:06  INFO      Running T1-B: All outgoing links from seed
+22:33:06  INFO        [PG] T1-B cold run...
+22:33:11  INFO          cold=4849.4 ms  rows=24396
+22:33:11  INFO          warm 1/3: exec=264.8 ms  plan=1.57 ms  hits=590811  reads=0
+22:33:11  INFO          warm 2/3: exec=113.5 ms  plan=1.36 ms  hits=590811  reads=0
+22:33:12  INFO          warm 3/3: exec=95.7 ms  plan=0.92 ms  hits=590811  reads=0
+22:33:13  INFO      Running T1-C: Hostile links only from seed
+22:33:13  INFO        [PG] T1-C cold run...
+22:33:13  INFO          cold=92.2 ms  rows=8022
+22:33:13  INFO          warm 1/3: exec=40.6 ms  plan=0.84 ms  hits=202359  reads=0
+22:33:13  INFO          warm 2/3: exec=64.0 ms  plan=1.01 ms  hits=202359  reads=0
+22:33:13  INFO          warm 3/3: exec=53.9 ms  plan=1.12 ms  hits=202359  reads=0
+22:33:14  INFO      Running T2-A: Global in-degree ranking (top 20)
+22:33:14  INFO        [PG] T2-A cold run...
+22:33:14  INFO          cold=324.3 ms  rows=20
+22:33:15  INFO          warm 1/3: exec=311.4 ms  plan=0.37 ms  hits=19680  reads=0
+22:33:15  INFO          warm 2/3: exec=363.7 ms  plan=0.35 ms  hits=19680  reads=0
+22:33:16  INFO          warm 3/3: exec=330.3 ms  plan=0.55 ms  hits=19680  reads=0
+22:33:16  INFO      Running T2-B: Top-20 subreddits by hostile link count
+22:33:16  INFO        [PG] T2-B cold run...
+22:33:16  INFO          cold=39.1 ms  rows=20
+22:33:17  INFO          warm 1/3: exec=48.0 ms  plan=0.32 ms  hits=12035  reads=0
+22:33:17  INFO          warm 2/3: exec=63.6 ms  plan=0.38 ms  hits=12035  reads=0
+22:33:17  INFO          warm 3/3: exec=75.6 ms  plan=0.39 ms  hits=12035  reads=0
+22:33:18  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+22:33:18  INFO        [PG] T3-A cold run...
+22:33:18  INFO          cold=350.9 ms  rows=25
+22:33:19  INFO          warm 1/3: exec=296.0 ms  plan=1.07 ms  hits=1389369  reads=0
+22:33:19  INFO          warm 2/3: exec=96.1 ms  plan=1.11 ms  hits=1389369  reads=0
+22:33:19  INFO          warm 3/3: exec=94.2 ms  plan=1.05 ms  hits=1389369  reads=0
+22:33:20  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+22:33:20  INFO        [PG] T3-C cold run...
+22:33:22  INFO          cold=1937.6 ms  rows=25
+22:33:22  INFO          warm 1/3: exec=34.2 ms  plan=1.42 ms  hits=127615  reads=0
+22:33:22  INFO          warm 2/3: exec=34.7 ms  plan=1.82 ms  hits=127615  reads=0
+22:33:22  INFO          warm 3/3: exec=29.8 ms  plan=2.17 ms  hits=127615  reads=0
+22:33:23  INFO      Running T4-A: Global mutual hostile pairs
+22:33:23  INFO        [PG] T4-A cold run...
+22:33:32  INFO          cold=8464.3 ms  rows=20
+22:33:34  INFO          warm 1/3: exec=2264.2 ms  plan=38.11 ms  hits=2866261  reads=0
+22:33:35  INFO          warm 2/3: exec=984.7 ms  plan=8.80 ms  hits=2903029  reads=0
+22:33:36  INFO          warm 3/3: exec=856.8 ms  plan=9.67 ms  hits=2913553  reads=0
+22:33:37  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+22:33:37  INFO        [PG] T4-B cold run...
+22:33:37  INFO          cold=948.6 ms  rows=500
+22:33:38  INFO          warm 1/3: exec=581.2 ms  plan=0.48 ms  hits=3048291  reads=0
+22:33:39  INFO          warm 2/3: exec=570.1 ms  plan=0.49 ms  hits=3048291  reads=0
+22:33:39  INFO          warm 3/3: exec=558.8 ms  plan=0.59 ms  hits=3048291  reads=0
+22:33:41  INFO      Running T5-A: 3-node hostile cycles seeded
+22:33:41  INFO        [PG] T5-A cold run...
+22:33:41  INFO          cold=117.5 ms  rows=50
+22:33:41  INFO          warm 1/3: exec=38.5 ms  plan=93.73 ms  hits=126287  reads=0
+22:33:41  INFO          warm 2/3: exec=40.9 ms  plan=83.07 ms  hits=126287  reads=0
+22:33:41  INFO          warm 3/3: exec=42.8 ms  plan=80.48 ms  hits=126287  reads=0
+22:33:42  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+22:33:42  INFO        [PG] T5-B cold run...
+22:38:12  INFO          cold=269456.6 ms  rows=500
+22:43:10  INFO          warm 1/3: exec=298923.9 ms  plan=57.76 ms  hits=1154433216  reads=0
+22:47:51  INFO          warm 2/3: exec=281299.6 ms  plan=33.02 ms  hits=1154433216  reads=0
+22:54:30  INFO          warm 3/3: exec=402650.6 ms  plan=36.47 ms  hits=1154433216  reads=0
+22:54:31  INFO      === Neo4j: 10 queries × 3 warm runs + 1 PROFILE ===
+22:54:31  INFO      Running T1-B: All outgoing links from seed
+22:54:31  INFO        [Neo4j] T1-B cold run...
+22:55:00  INFO          cold=28713.6 ms  rows=24396
+22:55:00  INFO          profiling for db_hits (not timed)...
+22:55:05  INFO          db_hits=266210
+22:55:12  INFO          warm 1/3: consumed=1008.0 ms  available=7.0 ms
+22:55:17  INFO          warm 2/3: consumed=747.0 ms  available=1.0 ms
+22:55:21  INFO          warm 3/3: consumed=480.0 ms  available=2.0 ms
+22:55:22  INFO      Running T1-C: Hostile links only from seed
+22:55:22  INFO        [Neo4j] T1-C cold run...
+22:55:26  INFO          cold=4772.8 ms  rows=8022
+22:55:26  INFO          profiling for db_hits (not timed)...
+22:55:32  INFO          db_hits=119942
+22:55:34  INFO          warm 1/3: consumed=1046.0 ms  available=18.0 ms
+22:55:35  INFO          warm 2/3: consumed=96.0 ms  available=1.0 ms
+22:55:36  INFO          warm 3/3: consumed=75.0 ms  available=1.0 ms
+22:55:38  INFO      Running T2-A: Global in-degree ranking (top 20)
+22:55:38  INFO        [Neo4j] T2-A cold run...
+22:55:42  INFO          cold=4246.6 ms  rows=20
+22:55:42  INFO          profiling for db_hits (not timed)...
+22:55:44  INFO          db_hits=1141207
+22:55:44  INFO          warm 1/3: consumed=748.0 ms  available=1.0 ms
+22:55:48  INFO          warm 2/3: consumed=3202.0 ms  available=4.0 ms
+22:55:48  INFO          warm 3/3: consumed=674.0 ms  available=2.0 ms
+22:55:50  INFO      Running T2-B: Top-20 subreddits by hostile link count
+22:55:50  INFO        [Neo4j] T2-B cold run...
+22:55:51  INFO          cold=1048.0 ms  rows=20
+22:55:51  INFO          profiling for db_hits (not timed)...
+22:55:51  INFO          db_hits=400332
+22:55:51  INFO          warm 1/3: consumed=184.0 ms  available=1.0 ms
+22:55:51  INFO          warm 2/3: consumed=135.0 ms  available=1.0 ms
+22:55:51  INFO          warm 3/3: consumed=172.0 ms  available=1.0 ms
+22:55:52  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+22:55:52  INFO        [Neo4j] T3-A cold run...
+22:55:59  INFO          cold=6233.0 ms  rows=25
+22:55:59  INFO          profiling for db_hits (not timed)...
+22:56:03  INFO          db_hits=1186516
+22:56:05  INFO          warm 1/3: consumed=2499.0 ms  available=1.0 ms
+22:56:07  INFO          warm 2/3: consumed=1062.0 ms  available=0.0 ms
+22:56:08  INFO          warm 3/3: consumed=1901.0 ms  available=1.0 ms
+22:56:09  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+22:56:09  INFO        [Neo4j] T3-C cold run...
+22:56:13  INFO          cold=4194.8 ms  rows=25
+22:56:13  INFO          profiling for db_hits (not timed)...
+22:56:13  INFO          db_hits=9463
+22:56:13  INFO          warm 1/3: consumed=10.0 ms  available=2.0 ms
+22:56:13  INFO          warm 2/3: consumed=8.0 ms  available=1.0 ms
+22:56:13  INFO          warm 3/3: consumed=7.0 ms  available=2.0 ms
+22:56:15  INFO      Running T4-A: Global mutual hostile pairs
+22:56:15  INFO        [Neo4j] T4-A cold run...
+22:56:20  INFO          cold=5261.6 ms  rows=20
+22:56:20  INFO          profiling for db_hits (not timed)...
+22:56:22  INFO          db_hits=3269824
+22:56:29  INFO          warm 1/3: consumed=6336.0 ms  available=3.0 ms
+22:56:33  INFO          warm 2/3: consumed=3957.0 ms  available=3.0 ms
+22:56:36  INFO          warm 3/3: consumed=3072.0 ms  available=3.0 ms
+22:56:36  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+22:56:36  INFO        [Neo4j] T4-B cold run...
+22:56:36  INFO          cold=239.2 ms  rows=500
+22:56:36  INFO          profiling for db_hits (not timed)...
+22:56:36  INFO          db_hits=40751
+22:56:37  INFO          warm 1/3: consumed=35.0 ms  available=1.0 ms
+22:56:37  INFO          warm 2/3: consumed=30.0 ms  available=2.0 ms
+22:56:37  INFO          warm 3/3: consumed=19.0 ms  available=1.0 ms
+22:56:38  INFO      Running T5-A: 3-node hostile cycles seeded
+22:56:38  INFO        [Neo4j] T5-A cold run...
+22:56:38  INFO          cold=271.1 ms  rows=50
+22:56:38  INFO          profiling for db_hits (not timed)...
+22:56:38  INFO          db_hits=104779
+22:56:38  INFO          warm 1/3: consumed=64.0 ms  available=1.0 ms
+22:56:38  INFO          warm 2/3: consumed=57.0 ms  available=2.0 ms
+22:56:38  INFO          warm 3/3: consumed=43.0 ms  available=1.0 ms
+22:56:40  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+22:56:40  INFO        [Neo4j] T5-B cold run...
+22:56:40  INFO          cold=387.6 ms  rows=500
+22:56:40  INFO          profiling for db_hits (not timed)...
+22:56:41  INFO          db_hits=40762
+22:56:41  INFO          warm 1/3: consumed=51.0 ms  available=1.0 ms
+22:56:41  INFO          warm 2/3: consumed=14.0 ms  available=2.0 ms
+22:56:41  INFO          warm 3/3: consumed=18.0 ms  available=1.0 ms
+22:56:44  INFO      Results saved → C:\Users\david\Desktop\postgres-vs-neo4j-reddit-benchmark\data\benchmark_results.json
+22:56:44  INFO      Open notebooks/results_analysis.ipynb to generate charts.
+22:57:23  INFO      Seeds:  seed=subredditdrama  seed_a=subredditdrama (deg 24396)  seed_b=bestof (deg 21170)  seed_bfs=mlplounge (deg 374)
+22:57:23  INFO      === PostgreSQL: 10 queries × 5 warm runs ===
+22:57:23  INFO      Running T1-B: All outgoing links from seed
+22:57:23  INFO        [PG] T1-B cold run...
+22:57:24  INFO          cold=719.2 ms  rows=24396
+22:57:24  INFO          warm 1/5: exec=180.5 ms  plan=1.16 ms  hits=590811  reads=0
+22:57:25  INFO          warm 2/5: exec=205.4 ms  plan=1.22 ms  hits=590811  reads=0
+22:57:25  INFO          warm 3/5: exec=169.0 ms  plan=1.22 ms  hits=590811  reads=0
+22:57:25  INFO          warm 4/5: exec=142.7 ms  plan=1.76 ms  hits=590811  reads=0
+22:57:25  INFO          warm 5/5: exec=145.9 ms  plan=1.32 ms  hits=590811  reads=0
+22:57:26  INFO      Running T1-C: Hostile links only from seed
+22:57:26  INFO        [PG] T1-C cold run...
+22:57:26  INFO          cold=92.5 ms  rows=8022
+22:57:26  INFO          warm 1/5: exec=47.1 ms  plan=0.92 ms  hits=202359  reads=0
+22:57:26  INFO          warm 2/5: exec=59.6 ms  plan=1.07 ms  hits=202359  reads=0
+22:57:26  INFO          warm 3/5: exec=50.3 ms  plan=1.22 ms  hits=202359  reads=0
+22:57:26  INFO          warm 4/5: exec=37.5 ms  plan=0.78 ms  hits=202359  reads=0
+22:57:26  INFO          warm 5/5: exec=39.2 ms  plan=1.32 ms  hits=202359  reads=0
+22:57:27  INFO      Running T2-A: Global in-degree ranking (top 20)
+22:57:27  INFO        [PG] T2-A cold run...
+22:57:27  INFO          cold=266.1 ms  rows=20
+22:57:28  INFO          warm 1/5: exec=340.9 ms  plan=0.34 ms  hits=19680  reads=0
+22:57:28  INFO          warm 2/5: exec=420.7 ms  plan=0.86 ms  hits=19680  reads=0
+22:57:29  INFO          warm 3/5: exec=370.3 ms  plan=0.36 ms  hits=19680  reads=0
+22:57:29  INFO          warm 4/5: exec=330.3 ms  plan=0.33 ms  hits=19680  reads=0
+22:57:29  INFO          warm 5/5: exec=379.8 ms  plan=0.34 ms  hits=19680  reads=0
+22:57:31  INFO      Running T2-B: Top-20 subreddits by hostile link count
+22:57:31  INFO        [PG] T2-B cold run...
+22:57:31  INFO          cold=37.8 ms  rows=20
+22:57:31  INFO          warm 1/5: exec=48.7 ms  plan=0.40 ms  hits=12035  reads=0
+22:57:31  INFO          warm 2/5: exec=57.6 ms  plan=0.38 ms  hits=12035  reads=0
+22:57:31  INFO          warm 3/5: exec=46.8 ms  plan=0.40 ms  hits=12035  reads=0
+22:57:31  INFO          warm 4/5: exec=45.9 ms  plan=0.36 ms  hits=12035  reads=0
+22:57:31  INFO          warm 5/5: exec=45.4 ms  plan=0.35 ms  hits=12035  reads=0
+22:57:32  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+22:57:32  INFO        [PG] T3-A cold run...
+22:57:32  INFO          cold=112.6 ms  rows=25
+22:57:32  INFO          warm 1/5: exec=129.7 ms  plan=1.22 ms  hits=1389369  reads=0
+22:57:32  INFO          warm 2/5: exec=119.6 ms  plan=1.47 ms  hits=1389369  reads=0
+22:57:33  INFO          warm 3/5: exec=105.1 ms  plan=0.95 ms  hits=1389369  reads=0
+22:57:33  INFO          warm 4/5: exec=104.4 ms  plan=1.01 ms  hits=1389369  reads=0
+22:57:33  INFO          warm 5/5: exec=108.8 ms  plan=0.87 ms  hits=1389369  reads=0
+22:57:34  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+22:57:34  INFO        [PG] T3-C cold run...
+22:57:34  INFO          cold=467.8 ms  rows=25
+22:57:34  INFO          warm 1/5: exec=27.6 ms  plan=1.26 ms  hits=127615  reads=0
+22:57:34  INFO          warm 2/5: exec=28.2 ms  plan=1.45 ms  hits=127615  reads=0
+22:57:34  INFO          warm 3/5: exec=28.2 ms  plan=1.50 ms  hits=127615  reads=0
+22:57:34  INFO          warm 4/5: exec=31.0 ms  plan=1.60 ms  hits=127615  reads=0
+22:57:34  INFO          warm 5/5: exec=26.6 ms  plan=1.68 ms  hits=127615  reads=0
+22:57:36  INFO      Running T4-A: Global mutual hostile pairs
+22:57:36  INFO        [PG] T4-A cold run...
+22:57:37  INFO          cold=800.4 ms  rows=20
+22:57:37  INFO          warm 1/5: exec=937.4 ms  plan=15.27 ms  hits=2900017  reads=0
+22:57:38  INFO          warm 2/5: exec=869.9 ms  plan=11.24 ms  hits=2916665  reads=0
+22:57:39  INFO          warm 3/5: exec=749.8 ms  plan=10.81 ms  hits=2907697  reads=0
+22:57:40  INFO          warm 4/5: exec=759.1 ms  plan=11.58 ms  hits=2904061  reads=0
+22:57:41  INFO          warm 5/5: exec=706.3 ms  plan=8.40 ms  hits=2906941  reads=0
+22:57:41  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+22:57:41  INFO        [PG] T4-B cold run...
+22:57:42  INFO          cold=541.1 ms  rows=500
+22:57:42  INFO          warm 1/5: exec=579.2 ms  plan=0.46 ms  hits=3048291  reads=0
+22:57:43  INFO          warm 2/5: exec=540.0 ms  plan=0.57 ms  hits=3048291  reads=0
+22:57:43  INFO          warm 3/5: exec=618.3 ms  plan=0.48 ms  hits=3048291  reads=0
+22:57:44  INFO          warm 4/5: exec=519.3 ms  plan=0.56 ms  hits=3048291  reads=0
+22:57:44  INFO          warm 5/5: exec=487.7 ms  plan=0.67 ms  hits=3048291  reads=0
+22:57:45  INFO      Running T5-A: 3-node hostile cycles seeded
+22:57:45  INFO        [PG] T5-A cold run...
+22:57:45  INFO          cold=69.3 ms  rows=50
+22:57:45  INFO          warm 1/5: exec=36.4 ms  plan=67.36 ms  hits=126287  reads=0
+22:57:45  INFO          warm 2/5: exec=23.5 ms  plan=63.84 ms  hits=126287  reads=0
+22:57:45  INFO          warm 3/5: exec=22.5 ms  plan=49.48 ms  hits=126287  reads=0
+22:57:45  INFO          warm 4/5: exec=22.5 ms  plan=49.27 ms  hits=126287  reads=0
+22:57:45  INFO          warm 5/5: exec=23.1 ms  plan=49.14 ms  hits=126287  reads=0
+22:57:46  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+22:57:46  INFO        [PG] T5-B cold run...
+23:02:03  INFO          cold=256984.4 ms  rows=500
+23:06:50  INFO          warm 1/5: exec=286540.4 ms  plan=32.93 ms  hits=1154433216  reads=0
+23:11:37  INFO          warm 2/5: exec=286376.3 ms  plan=28.70 ms  hits=1154433216  reads=0
+23:16:33  INFO          warm 3/5: exec=296647.5 ms  plan=27.14 ms  hits=1154433216  reads=0
+23:21:08  INFO          warm 4/5: exec=274853.1 ms  plan=30.52 ms  hits=1154433216  reads=0
+23:25:05  INFO          warm 5/5: exec=236288.0 ms  plan=14.59 ms  hits=1154433216  reads=0
+23:25:05  INFO      === Neo4j: 10 queries × 5 warm runs + 1 PROFILE ===
+23:25:06  INFO      Running T1-B: All outgoing links from seed
+23:25:06  INFO        [Neo4j] T1-B cold run...
+23:25:27  INFO          cold=21449.7 ms  rows=24396
+23:25:27  INFO          profiling for db_hits (not timed)...
+23:25:32  INFO          db_hits=266210
+23:25:41  INFO          warm 1/5: consumed=6195.0 ms  available=5.0 ms
+23:25:45  INFO          warm 2/5: consumed=1280.0 ms  available=2.0 ms
+23:26:04  INFO          warm 3/5: consumed=14030.0 ms  available=4.0 ms
+23:26:08  INFO          warm 4/5: consumed=203.0 ms  available=1.0 ms
+23:26:12  INFO          warm 5/5: consumed=628.0 ms  available=1.0 ms
+23:26:12  INFO      Running T1-C: Hostile links only from seed
+23:26:12  INFO        [Neo4j] T1-C cold run...
+23:26:16  INFO          cold=3847.7 ms  rows=8022
+23:26:16  INFO          profiling for db_hits (not timed)...
+23:26:18  INFO          db_hits=119942
+23:26:19  INFO          warm 1/5: consumed=89.0 ms  available=1.0 ms
+23:26:20  INFO          warm 2/5: consumed=73.0 ms  available=1.0 ms
+23:26:21  INFO          warm 3/5: consumed=93.0 ms  available=1.0 ms
+23:26:23  INFO          warm 4/5: consumed=71.0 ms  available=1.0 ms
+23:26:24  INFO          warm 5/5: consumed=68.0 ms  available=1.0 ms
+23:26:24  INFO      Running T2-A: Global in-degree ranking (top 20)
+23:26:24  INFO        [Neo4j] T2-A cold run...
+23:26:26  INFO          cold=2153.4 ms  rows=20
+23:26:26  INFO          profiling for db_hits (not timed)...
+23:26:27  INFO          db_hits=1141207
+23:26:27  INFO          warm 1/5: consumed=571.0 ms  available=1.0 ms
+23:26:28  INFO          warm 2/5: consumed=451.0 ms  available=1.0 ms
+23:26:28  INFO          warm 3/5: consumed=646.0 ms  available=1.0 ms
+23:26:32  INFO          warm 4/5: consumed=3397.0 ms  available=2.0 ms
+23:26:33  INFO          warm 5/5: consumed=1057.0 ms  available=9.0 ms
+23:26:34  INFO      Running T2-B: Top-20 subreddits by hostile link count
+23:26:34  INFO        [Neo4j] T2-B cold run...
+23:26:39  INFO          cold=4350.7 ms  rows=20
+23:26:39  INFO          profiling for db_hits (not timed)...
+23:26:39  INFO          db_hits=400332
+23:26:39  INFO          warm 1/5: consumed=198.0 ms  available=1.0 ms
+23:26:39  INFO          warm 2/5: consumed=139.0 ms  available=1.0 ms
+23:26:39  INFO          warm 3/5: consumed=118.0 ms  available=1.0 ms
+23:26:39  INFO          warm 4/5: consumed=135.0 ms  available=1.0 ms
+23:26:40  INFO          warm 5/5: consumed=120.0 ms  available=1.0 ms
+23:26:40  INFO      Running T3-A: 2-hop common targets of seed_a and seed_b
+23:26:40  INFO        [Neo4j] T3-A cold run...
+23:26:41  INFO          cold=387.0 ms  rows=25
+23:26:41  INFO          profiling for db_hits (not timed)...
+23:26:41  INFO          db_hits=1186516
+23:26:42  INFO          warm 1/5: consumed=588.0 ms  available=2.0 ms
+23:26:42  INFO          warm 2/5: consumed=517.0 ms  available=0.0 ms
+23:26:48  INFO          warm 3/5: consumed=5991.0 ms  available=4.0 ms
+23:26:49  INFO          warm 4/5: consumed=541.0 ms  available=3.0 ms
+23:26:49  INFO          warm 5/5: consumed=489.0 ms  available=1.0 ms
+23:26:50  INFO      Running T3-C: Common hostile attackers of seed_a and seed_b
+23:26:50  INFO        [Neo4j] T3-C cold run...
+23:26:55  INFO          cold=5067.4 ms  rows=25
+23:26:55  INFO          profiling for db_hits (not timed)...
+23:26:55  INFO          db_hits=9463
+23:26:55  INFO          warm 1/5: consumed=11.0 ms  available=2.0 ms
+23:26:55  INFO          warm 2/5: consumed=7.0 ms  available=1.0 ms
+23:26:55  INFO          warm 3/5: consumed=7.0 ms  available=2.0 ms
+23:26:55  INFO          warm 4/5: consumed=8.0 ms  available=1.0 ms
+23:26:55  INFO          warm 5/5: consumed=8.0 ms  available=1.0 ms
+23:26:57  INFO      Running T4-A: Global mutual hostile pairs
+23:26:57  INFO        [Neo4j] T4-A cold run...
+23:27:03  INFO          cold=6160.6 ms  rows=20
+23:27:03  INFO          profiling for db_hits (not timed)...
+23:27:04  INFO          db_hits=3269824
+23:27:06  INFO          warm 1/5: consumed=1309.0 ms  available=1.0 ms
+23:27:10  INFO          warm 2/5: consumed=3720.0 ms  available=2.0 ms
+23:27:11  INFO          warm 3/5: consumed=1272.0 ms  available=1.0 ms
+23:27:13  INFO          warm 4/5: consumed=2361.0 ms  available=3.0 ms
+23:27:15  INFO          warm 5/5: consumed=1816.0 ms  available=1.0 ms
+23:27:15  INFO      Running T4-B: Bounded BFS depth 2 from seed_bfs
+23:27:15  INFO        [Neo4j] T4-B cold run...
+23:27:15  INFO          cold=56.4 ms  rows=500
+23:27:15  INFO          profiling for db_hits (not timed)...
+23:27:15  INFO          db_hits=40751
+23:27:15  INFO          warm 1/5: consumed=23.0 ms  available=1.0 ms
+23:27:15  INFO          warm 2/5: consumed=26.0 ms  available=1.0 ms
+23:27:15  INFO          warm 3/5: consumed=23.0 ms  available=1.0 ms
+23:27:16  INFO          warm 4/5: consumed=18.0 ms  available=1.0 ms
+23:27:16  INFO          warm 5/5: consumed=18.0 ms  available=1.0 ms
+23:27:17  INFO      Running T5-A: 3-node hostile cycles seeded
+23:27:17  INFO        [Neo4j] T5-A cold run...
+23:27:17  INFO          cold=50.0 ms  rows=50
+23:27:17  INFO          profiling for db_hits (not timed)...
+23:27:17  INFO          db_hits=104779
+23:27:17  INFO          warm 1/5: consumed=43.0 ms  available=1.0 ms
+23:27:17  INFO          warm 2/5: consumed=54.0 ms  available=1.0 ms
+23:27:17  INFO          warm 3/5: consumed=35.0 ms  available=1.0 ms
+23:27:17  INFO          warm 4/5: consumed=34.0 ms  available=1.0 ms
+23:27:17  INFO          warm 5/5: consumed=34.0 ms  available=1.0 ms
+23:27:18  INFO      Running T5-B: Bounded BFS depth 3 from seed_bfs
+23:27:18  INFO        [Neo4j] T5-B cold run...
+23:27:19  INFO          cold=38.5 ms  rows=500
+23:27:19  INFO          profiling for db_hits (not timed)...
+23:27:19  INFO          db_hits=40762
+23:27:19  INFO          warm 1/5: consumed=19.0 ms  available=1.0 ms
+23:27:19  INFO          warm 2/5: consumed=19.0 ms  available=1.0 ms
+23:27:19  INFO          warm 3/5: consumed=16.0 ms  available=2.0 ms
+23:27:19  INFO          warm 4/5: consumed=15.0 ms  available=1.0 ms
+23:27:19  INFO          warm 5/5: consumed=23.0 ms  available=1.0 ms
+23:27:20  INFO      Results saved → C:\Users\david\Desktop\postgres-vs-neo4j-reddit-benchmark\data\benchmark_results.json
+23:27:20  INFO      Open notebooks/results_analysis.ipynb to generate charts.
+23:27:31  INFO      Seeds:  seed=subredditdrama  seed_a=subredditdrama (deg 24396)  seed_b=bestof (deg 21170)  seed_bfs=mlplounge (deg 374)

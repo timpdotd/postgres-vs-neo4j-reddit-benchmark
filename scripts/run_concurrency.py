@@ -23,6 +23,7 @@ CONCURRENCY_LEVELS = [1, 10, 50]
 TOTAL_REQUESTS = 150  # Requests to execute per concurrency level
 
 def run_pg_worker(query: dict, seeds: dict) -> float:
+    """Execute a single PG query and return wall-clock time in ms."""
     t0 = time.perf_counter()
     try:
         with psycopg.connect(**PG_CONFIG) as conn:
@@ -31,16 +32,6 @@ def run_pg_worker(query: dict, seeds: dict) -> float:
                 cur.fetchall()
     except Exception as e:
         print(f"PG worker error: {e}")
-    return (time.perf_counter() - t0) * 1000.0
-
-def run_neo4j_worker(query: dict, seeds: dict) -> float:
-    t0 = time.perf_counter()
-    try:
-        # We must create a new driver instance or use a shared one.
-        # Shared driver is better for connection pooling, simulating a real app.
-        pass # implemented below
-    except Exception as e:
-        print(f"Neo4j worker error: {e}")
     return (time.perf_counter() - t0) * 1000.0
 
 def execute_neo4j_with_driver(driver, query: dict, seeds: dict) -> float:
@@ -91,15 +82,21 @@ def main():
             
             total_time = time.perf_counter() - start_time
             qps = TOTAL_REQUESTS / total_time
-            p95 = statistics.quantiles(latencies, n=100)[94] if len(latencies) >= 100 else max(latencies)
-            
-            print(f"      -> QPS: {qps:.2f}, p95 Latency: {p95:.1f} ms")
-            
+            sorted_lat = sorted(latencies)
+            n = len(sorted_lat)
+            p50 = sorted_lat[int(n * 0.50)] if n >= 2 else sorted_lat[-1]
+            p95 = sorted_lat[int(n * 0.95)] if n >= 20 else sorted_lat[-1]
+            p99 = sorted_lat[int(n * 0.99)] if n >= 100 else sorted_lat[-1]
+
+            print(f"      -> QPS: {qps:.2f}, p50: {p50:.1f} ms, p95: {p95:.1f} ms, p99: {p99:.1f} ms")
+
             results.append({
                 "db": db_name.lower(),
                 "concurrency": c,
                 "qps": qps,
+                "p50_latency_ms": p50,
                 "p95_latency_ms": p95,
+                "p99_latency_ms": p99,
                 "median_latency_ms": statistics.median(latencies)
             })
             

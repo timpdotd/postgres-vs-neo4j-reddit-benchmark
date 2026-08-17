@@ -8,20 +8,39 @@ to comply with FAQ Q12 non-trivial modeling requirements.
 Metrics captured per query per database:
   PostgreSQL (via EXPLAIN ANALYZE BUFFERS FORMAT JSON):
     - planning_ms       : query planner time (server-side)
-    - execution_ms      : query executor time (server-side, excludes planning)
+    - execution_ms      : query executor time (server-side, excludes planning AND network)
     - buffer_hits       : pages served from shared_buffers (cache hit)
     - buffer_reads      : pages read from disk (cache miss)
     - buffer_hit_ratio  : hits / (hits + reads)  → cache effectiveness
     - temp_blocks       : blocks spilled to temp disk (memory pressure indicator)
     - actual_rows       : rows produced by the top plan node
-  Neo4j:
-    - available_ms      : server time until first result available (driver-reported)
-    - consumed_ms       : server+transfer time until all results consumed
-    - db_hits           : total record-store accesses (via one-off PROFILE run)
+
+  Neo4j (via Python driver result summary):
+    - consumed_ms  : time from query submission until ALL rows are fetched and consumed.
+                     = server_compute + Bolt_serialization + network_transfer.
+                     For small result sets (<~100 rows), network term is negligible,
+                     so consumed_ms ≈ server_compute.  PRIMARY metric for aggregations.
+    - available_ms : time from query submission until the CURSOR becomes readable.
+                     Due to Neo4j’s lazy evaluation, this is effectively the planning/RTT
+                     time, NOT the full server computation. It is consistently ~1ms regardless
+                     of query complexity and is therefore NOT a reliable server-side proxy.
+                     SECONDARY metric, shown for transparency.
+    - db_hits      : total record-store accesses (via one-off PROFILE run)
+
   Both:
-    - cold_ms           : first-access wall-clock time (cold-ish cache)
-    - result_count      : number of rows returned
+    - cold_ms      : first-access wall-clock time (cold-ish cache)
+    - result_count : number of rows returned
     - timing variability: stdev and coefficient of variation over warm runs
+
+FAIR COMPARISON METHODOLOGY:
+  For PG we use EXPLAIN ANALYZE execution_ms (server-only).
+  For Neo4j we use consumed_ms as the primary metric, with the following note:
+    • For queries returning ≤50 rows: consumed_ms ≈ server_compute (network overhead <1ms)
+    • For queries returning thousands of rows (T1-B: 24k rows): consumed_ms includes
+      significant Bolt transfer overhead (estimated ~53μs/row). The notebook decomposes
+      this per query using the result_count field.
+  available_ms is NOT used as primary because it reports ~1ms for ALL queries
+  (including heavy aggregations like T4-A taking 1800ms) due to lazy cursor initialization.
 """
 
 import argparse
@@ -120,7 +139,8 @@ class MemoryProfiler:
                     ["docker", "stats", "--no-stream", "--format", "{{.Name}},{{.MemUsage}}"],
                     capture_output=True, text=True, timeout=1.0
                 )
-                for line in res.stdout.strip().split('\\n'):
+                # Fix: split on actual newline character, not literal '\n'
+                for line in res.stdout.strip().split('\n'):
                     if not line: continue
                     parts = line.split(',')
                     if len(parts) >= 2:
@@ -579,10 +599,21 @@ def _neo4j_timed_run(driver, cypher: str, params) -> dict:
 
 
 def _neo4j_profile_once(driver, cypher: str, params) -> int:
-    """One-off PROFILE run to collect db_hits. NOT used for timing."""
+    """One-off PROFILE run to collect db_hits. NOT used for timing.
+
+    In Neo4j driver 5.x, profile plan nodes are plain dicts with camelCase keys
+    (e.g. 'dbHits', 'children'). Older versions exposed them as object attributes.
+    We handle both cases for robustness.
+    """
     def _sum_hits(node) -> int:
-        total = getattr(node, "db_hits", 0) or 0
-        for child in getattr(node, "children", []):
+        # Neo4j 5.x driver returns dicts; fallback to attribute access for older drivers
+        if isinstance(node, dict):
+            total = node.get("dbHits", 0) or 0
+            children = node.get("children", [])
+        else:
+            total = getattr(node, "db_hits", 0) or 0
+            children = getattr(node, "children", [])
+        for child in children:
             total += _sum_hits(child)
         return total
     try:
@@ -590,7 +621,12 @@ def _neo4j_profile_once(driver, cypher: str, params) -> int:
             result = session.run("PROFILE " + cypher, **(params or {}))
             result.data()
             summ = result.consume()
-            return _sum_hits(summ.profile) if summ.profile else -1
+            if summ.profile is None:
+                log.warning("PROFILE returned no plan (PROFILE clause may not be supported).")
+                return -1
+            hits = _sum_hits(summ.profile)
+            log.debug("PROFILE db_hits raw sum: %d", hits)
+            return hits
     except Exception as exc:
         log.warning("PROFILE run failed (non-fatal): %s", exc)
         return -1
@@ -642,12 +678,28 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
     client_cpu = psutil.cpu_percent(interval=None)
     mem_stat = psutil.virtual_memory()
 
+    # PRIMARY comparison metric: consumed_ms (total query time incl. fetch).
+    # For small result sets (<50 rows), network overhead is negligible: consumed ≈ server_compute.
+    # For large result sets (T1-B: 24k rows), consumed includes Bolt transfer overhead;
+    # the notebook uses result_count to estimate and decompose the transfer component.
+    #
+    # NOTE: available_ms is NOT used as primary because it returns ~1ms for ALL queries
+    # (including heavy aggregations like T4-A 1800ms) due to Neo4j lazy cursor init.
+    # available_ms only represents planning+RTT time, not server computation.
+    med_c   = median(valid_c) if valid_c else None
+    cv      = (stdev(valid_c) / mean(valid_c) * 100) if len(valid_c) > 1 and mean(valid_c) > 0 else 0.0
+    med_a   = median(valid_a) if valid_a else None
+
     return {
         "query_id":             q_id,
         "query_name":           query["name"],
         "tier":                 query["tier"],
         "db":                   "neo4j",
-        "timing_method":        "result_consumed_after (driver ms, server+network transfer)",
+        # METHODOLOGY NOTE:
+        # PRIMARY timing = consumed_ms (server+fetch). For small result sets it approximates
+        # server-side compute. For large result sets, notebook decomposes transfer overhead.
+        # available_ms is unreliable as server proxy (lazy cursor init returns ~1ms always).
+        "timing_method":        "result_consumed_after (server+Bolt fetch ms). NOTE: available_after is unreliable as server proxy due to lazy evaluation - see docstring.",
         "seeds_used":           params or {},
         # Cold cache
         "cold_ms":              cold_ms,
@@ -661,24 +713,28 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
         "client_cpu_pct":       round(client_cpu, 2),
         "client_ram_pct":       round(mem_stat.percent, 2),
         "client_ram_used_mb":   round(mem_stat.used / (1024 * 1024), 2),
-        # Warm timing (per-run lists for box plots)
+        # Warm timing per-run lists
         "warm_runs":            n_runs,
         "warm_consumed_ms":     consumed_list,
         "warm_available_ms":    available_list,
-        # Primary timing
+        # PRIMARY: consumed_ms (total query time)
+        # warm_execution_ms = consumed_list so that boxplots (Chart 3) are self-consistent
         "warm_execution_ms":    consumed_list,
         "median_execution_ms":  med_c,
         "median_consumed_ms":   med_c,
-        "median_available_ms":  median(valid_a) if valid_a else None,
         "mean_execution_ms":    mean(valid_c) if valid_c else None,
         "stdev_execution_ms":   stdev(valid_c) if len(valid_c) > 1 else 0.0,
         "min_execution_ms":     min(valid_c) if valid_c else None,
         "max_execution_ms":     max(valid_c) if valid_c else None,
         "cv_pct":               cv,
         "cold_warm_delta_ms":   cold_ms - med_c if med_c else None,
-        # Neo4j specific
-        "transfer_overhead_ms": (median(valid_c) - median(valid_a))
-                                if (valid_c and valid_a) else None,
+        # SECONDARY: available_ms shown for transparency (NOT server compute for aggregations)
+        "median_available_ms":  med_a,
+        "stdev_consumed_ms":    stdev(valid_c) if len(valid_c) > 1 else 0.0,
+        "cv_consumed_pct":      cv,
+        # Bolt transfer overhead (unreliable for aggregations: available_ms is ~1ms always)
+        "transfer_overhead_ms": (med_c - med_a)
+                                if (med_c is not None and med_a is not None) else None,
     }
 
 
@@ -707,11 +763,11 @@ def print_table(results: list[dict]) -> None:
     for r in results:
         by_q.setdefault(r["query_id"], {})[r["db"]] = r
 
-    W = 108
+    W = 124
     print("\n" + "=" * W)
     hdr = (f"{'ID':<8} {'Tier':<5} {'Name':<38} "
-           f"{'PG exec':>9} {'PG plan':>8} {'PG buf%':>8} "
-           f"{'Neo4j':>9} {'Neo4j avail':>12} {'Speedup':>8}")
+           f"{'PG exec':<10} {'PG plan':<9} {'PG buf%':<9} "
+           f"{'Neo4j e2e':<11} {'Neo4j avail':<12} {'Notes':<15}")
     print(hdr)
     print("=" * W)
 
@@ -726,24 +782,31 @@ def print_table(results: list[dict]) -> None:
         pg_plan = f"{pg['median_planning_ms']:.2f}"  if pg.get("median_planning_ms")  else "—"
         pg_buf  = f"{pg['buffer_hit_ratio']*100:.1f}%" if pg.get("buffer_hit_ratio")  else "—"
 
-        neo_c   = f"{neo['median_consumed_ms']:.1f}"  if neo.get("median_consumed_ms")  else "err"
-        neo_a   = f"{neo['median_available_ms']:.1f}" if neo.get("median_available_ms") else "—"
+        # PRIMARY: consumed_ms (total time including fetch)
+        neo_e2e = f"{neo['median_consumed_ms']:.1f}" if neo.get("median_consumed_ms") else "err"
+        neo_avl = f"{neo['median_available_ms']:.1f}" if neo.get("median_available_ms") else "—"
+        rows    = neo.get("result_count", 0) or pg.get("result_count", 0)
 
+        # Speedup note: for small results consumed ≈ server_compute
         if pg.get("median_execution_ms") and neo.get("median_consumed_ms"):
-            ratio = pg["median_execution_ms"] / neo["median_consumed_ms"]
-            winner = f"Neo {ratio:.2f}x" if ratio > 1 else f"PG  {1/ratio:.2f}x"
+            ratio_e2e = pg["median_execution_ms"] / neo["median_consumed_ms"]
+            if rows <= 100:
+                note = f"Neo {ratio_e2e:.1f}x (svr≈)"
+            else:
+                note = f"Neo {ratio_e2e:.1f}x (incl.tx)"
         else:
-            winner = "—"
+            note = "—"
 
         print(f"{qid:<8} {t:<5} {name:<38} "
-              f"{pg_exec:>9} {pg_plan:>8} {pg_buf:>8} "
-              f"{neo_c:>9} {neo_a:>12} {winner:>8}")
+              f"{pg_exec:<10} {pg_plan:<9} {pg_buf:<9} "
+              f"{neo_e2e:<11} {neo_avl:<12} {note:<15}")
 
     print("=" * W)
-    print("\nPG exec = EXPLAIN ANALYZE Execution Time (server-only, ms)")
-    print("PG plan = Planning Time (ms)  |  PG buf% = shared_buffers cache hit rate")
-    print("Neo4j   = result_consumed_after (server+network, ms)")
-    print("Neo4j avail = result_available_after (server-only estimate, ms)\n")
+    print("\nPG exec      = EXPLAIN ANALYZE Execution Time (server-only, excludes network)")
+    print("Neo4j e2e    = result_consumed_after (server+Bolt fetch) ← PRIMARY")
+    print("               For rows<=100: e2e ≈ server_compute (network overhead <1ms)")
+    print("               For rows>>100: e2e includes Bolt transfer (T1-B: ~53μs/row)")
+    print("Neo4j avail  = result_available_after ← UNRELIABLE: ~1ms for ALL queries (lazy cursor init)\n")
 
 
 # ---------------------------------------------------------------------------

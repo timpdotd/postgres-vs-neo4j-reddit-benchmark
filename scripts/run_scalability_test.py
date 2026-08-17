@@ -15,8 +15,19 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import psycopg
+import os
+
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
+
+PG_CONFIG = {
+    "host":     os.getenv("PG_HOST",  "localhost"),
+    "port":     int(os.getenv("PG_PORT",  "5432")),
+    "dbname":   os.getenv("PG_DB",   "reddit_benchmark"),
+    "user":     os.getenv("PG_USER", "reddit_user"),
+    "password": os.getenv("PG_PASS", "reddit_password"),
+}
 
 TSV_FILES = [
     "soc-redditHyperlinks-body.tsv",
@@ -79,6 +90,18 @@ def main():
             # Run ETL
             print("\n[*] Running ETL pipeline for this dataset size...")
             run_script("load_data.py")
+
+            # After ETL, run VACUUM ANALYZE so PostgreSQL planner statistics reflect
+            # the CURRENT dataset size (not stale stats from a previous 100% load).
+            # Without this, PG may use query plans optimized for 100% when running 20%.
+            print("\n[*] Running VACUUM ANALYZE to update PG planner statistics...")
+            try:
+                with psycopg.connect(**PG_CONFIG, autocommit=True) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("VACUUM ANALYZE subreddits, posts, hyperlinks;")
+                print("    VACUUM ANALYZE complete.")
+            except Exception as e:
+                print(f"    [!] VACUUM ANALYZE failed (non-fatal): {e}")
             
             # Run Benchmark (we only really care about T4-B / T5-B for scaling)
             print("\n[*] Running Benchmark (recording times)...")
