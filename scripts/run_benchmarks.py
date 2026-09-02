@@ -137,18 +137,24 @@ class MemoryProfiler:
             try:
                 res = subprocess.run(
                     ["docker", "stats", "--no-stream", "--format", "{{.Name}},{{.MemUsage}}"],
-                    capture_output=True, text=True, timeout=1.0
+                    capture_output=True, text=True, timeout=2.0
                 )
-                # Fix: split on actual newline character, not literal '\n'
+                if res.returncode != 0 or not res.stdout.strip():
+                    time.sleep(0.5)
+                    continue
+                # Split on actual newline character
                 for line in res.stdout.strip().split('\n'):
                     if not line: continue
                     parts = line.split(',')
                     if len(parts) >= 2:
-                        name, usage = parts[0], parts[1]
+                        name, usage = parts[0].strip(), parts[1].strip()
                         mb = self._parse_mb(usage)
-                        if "postgres" in name:
+                        # Match both bare names and docker-compose prefixed names
+                        # e.g. 'postgres', 'reddit-postgres', 'postgres-1'
+                        name_lower = name.lower()
+                        if "postgres" in name_lower:
                             self.peak_pg_mb = max(self.peak_pg_mb, mb)
-                        elif "neo4j" in name:
+                        elif "neo4j" in name_lower:
                             self.peak_neo_mb = max(self.peak_neo_mb, mb)
             except Exception:
                 pass
@@ -686,8 +692,6 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
     # NOTE: available_ms is NOT used as primary because it returns ~1ms for ALL queries
     # (including heavy aggregations like T4-A 1800ms) due to Neo4j lazy cursor init.
     # available_ms only represents planning+RTT time, not server computation.
-    med_c   = median(valid_c) if valid_c else None
-    cv      = (stdev(valid_c) / mean(valid_c) * 100) if len(valid_c) > 1 and mean(valid_c) > 0 else 0.0
     med_a   = median(valid_a) if valid_a else None
 
     return {
@@ -717,8 +721,9 @@ def run_neo4j_query(driver, query: dict, seeds: dict, n_runs: int) -> dict:
         "warm_runs":            n_runs,
         "warm_consumed_ms":     consumed_list,
         "warm_available_ms":    available_list,
-        # PRIMARY: consumed_ms (total query time)
-        # warm_execution_ms = consumed_list so that boxplots (Chart 3) are self-consistent
+        # PRIMARY: consumed_ms (total query time incl. Bolt transfer).
+        # warm_execution_ms mirrors consumed_list for consistent boxplots across charts.
+        # For queries with <= 50 rows, consumed ≈ server_compute (Bolt overhead < 1ms).
         "warm_execution_ms":    consumed_list,
         "median_execution_ms":  med_c,
         "median_consumed_ms":   med_c,
@@ -787,15 +792,15 @@ def print_table(results: list[dict]) -> None:
         neo_avl = f"{neo['median_available_ms']:.1f}" if neo.get("median_available_ms") else "—"
         rows    = neo.get("result_count", 0) or pg.get("result_count", 0)
 
-        # Speedup note: for small results consumed ≈ server_compute
+        # Speedup note: for small results consumed ~= server_compute
         if pg.get("median_execution_ms") and neo.get("median_consumed_ms"):
             ratio_e2e = pg["median_execution_ms"] / neo["median_consumed_ms"]
             if rows <= 100:
-                note = f"Neo {ratio_e2e:.1f}x (svr≈)"
+                note = f"Neo {ratio_e2e:.1f}x (svr~=)"
             else:
                 note = f"Neo {ratio_e2e:.1f}x (incl.tx)"
         else:
-            note = "—"
+            note = "--"
 
         print(f"{qid:<8} {t:<5} {name:<38} "
               f"{pg_exec:<10} {pg_plan:<9} {pg_buf:<9} "
@@ -803,10 +808,10 @@ def print_table(results: list[dict]) -> None:
 
     print("=" * W)
     print("\nPG exec      = EXPLAIN ANALYZE Execution Time (server-only, excludes network)")
-    print("Neo4j e2e    = result_consumed_after (server+Bolt fetch) ← PRIMARY")
-    print("               For rows<=100: e2e ≈ server_compute (network overhead <1ms)")
-    print("               For rows>>100: e2e includes Bolt transfer (T1-B: ~53μs/row)")
-    print("Neo4j avail  = result_available_after ← UNRELIABLE: ~1ms for ALL queries (lazy cursor init)\n")
+    print("Neo4j e2e    = result_consumed_after (server+Bolt fetch) [PRIMARY]")
+    print("               For rows<=100: e2e ~= server_compute (network overhead <1ms)")
+    print("               For rows>>100: e2e includes Bolt transfer (T1-B: ~53us/row)")
+    print("Neo4j avail  = result_available_after [UNRELIABLE: ~1ms for ALL queries (lazy cursor init)]\n")
 
 
 # ---------------------------------------------------------------------------
@@ -814,6 +819,11 @@ def print_table(results: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    import sys
+    # Ensure stdout uses UTF-8 on Windows (avoids cp1252 UnicodeEncodeError)
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
     parser = argparse.ArgumentParser(description="Multi-metric benchmark: PostgreSQL vs Neo4j")
     parser.add_argument("--runs",        type=int,  default=DEFAULT_RUNS)
     parser.add_argument("--output",      type=Path, default=DEFAULT_OUTPUT)

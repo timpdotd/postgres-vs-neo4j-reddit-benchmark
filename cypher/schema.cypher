@@ -59,10 +59,27 @@ CREATE INDEX post_idx_timestamp IF NOT EXISTS
     ON (p.timestamp);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LINKED_TO RELATIONSHIP PROPERTY INDEXES
-// Enables fast hostile-filter traversals on the subreddit-to-subreddit shortcut
-// edge without scanning all 858k LINKED_TO edges.
+// LINKED_TO RELATIONSHIP: Denormalized Subreddit-to-Subreddit Shortcut Edge
 // ─────────────────────────────────────────────────────────────────────────────
+// The [:LINKED_TO] relationship is a denormalized shortcut created during ETL:
+//   (:Subreddit)-[:LINKED_TO {post_label, timestamp, post_id, source_type}]->(:Subreddit)
+//
+// It collapses the 2-hop semantic path:
+//   (src:Subreddit)-[:POSTED]->(p:Post)-[:REFERENCES]->(tgt:Subreddit)
+// into a direct single edge, enabling O(1) adjacency traversal for:
+//   - Global aggregations (T2-A, T2-B)
+//   - Multi-hop intersection queries (T3-A, T3-C)
+//   - Mutual hostile pair detection (T4-A)
+//   - Variable-length BFS pathfinding (T4-B, T5-B)
+//   - 3-node cycle detection (T5-A)
+//
+// Post metadata (post_id, sentiment label, timestamp) is duplicated onto the edge
+// so that sentiment filtering (r.post_label = -1) can be applied directly during
+// traversal without re-joining through :Post nodes.
+//
+// This relationship is CREATED by scripts/load_data.py during the hyperlink
+// loading phase; the ETL session.run() call that creates it is:
+//   CREATE (src)-[:LINKED_TO {post_id, timestamp, source_type, post_label}]->(tgt)
 
 // Index on sentiment label for hostile-pair and mutual-attack pattern queries (T2-B, T3-C, T4-A, T5-A)
 CREATE INDEX linked_to_idx_label IF NOT EXISTS
